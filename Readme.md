@@ -8,6 +8,7 @@ This is an adaptation of enigmampc's snip20-reference-impl[https://github.com/en
 2. Remove #query_exchange_rate.
 3. Remove all references to contract status.
 4. Remove ability to remove minters.
+5. Remove ability to add minters.
 
 ## TO DO - ADAPT THIS TO THIS README
 

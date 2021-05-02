@@ -116,10 +116,6 @@ pub enum HandleMsg {
         amount: Uint128,
         padding: Option<String>,
     },
-    AddMinters {
-        minters: Vec<HumanAddr>,
-        padding: Option<String>,
-    },
     SetMinters {
         minters: Vec<HumanAddr>,
         padding: Option<String>,
@@ -186,9 +182,6 @@ pub enum HandleAnswer {
 
     // Mint
     Mint {
-        status: ResponseStatus,
-    },
-    AddMinters {
         status: ResponseStatus,
     },
     RemoveMinters {
