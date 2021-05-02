@@ -144,7 +144,6 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
 
         // Other
         HandleMsg::ChangeAdmin { address, .. } => change_admin(deps, env, address),
-        HandleMsg::AddMinters { minters, .. } => add_minters(deps, env, minters),
         HandleMsg::SetMinters { minters, .. } => set_minters(deps, env, minters),
     };
 
@@ -744,24 +743,6 @@ fn try_decrease_allowance<S: Storage, A: Api, Q: Querier>(
     Ok(res)
 }
 
-fn add_minters<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
-    env: Env,
-    minters_to_add: Vec<HumanAddr>,
-) -> StdResult<HandleResponse> {
-    let mut config = Config::from_storage(&mut deps.storage);
-
-    check_if_admin(&config, &env.message.sender)?;
-
-    config.add_minters(minters_to_add)?;
-
-    Ok(HandleResponse {
-        messages: vec![],
-        log: vec![],
-        data: Some(to_binary(&HandleAnswer::AddMinters { status: Success })?),
-    })
-}
-
 fn set_minters<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
@@ -959,8 +940,7 @@ mod tests {
             | HandleAnswer::BurnFrom { status }
             | HandleAnswer::Mint { status }
             | HandleAnswer::ChangeAdmin { status }
-            | HandleAnswer::SetMinters { status }
-            | HandleAnswer::AddMinters { status } => {
+            | HandleAnswer::SetMinters { status } => {
                 matches!(status, ResponseStatus::Success { .. })
             }
             _ => panic!("HandleAnswer not supported for success extraction"),
@@ -1778,14 +1758,6 @@ mod tests {
             init_result.err().unwrap()
         );
 
-        let mint_msg = HandleMsg::AddMinters {
-            minters: vec![HumanAddr("not_admin".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("not_admin", &[]), mint_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains(&admin_err.clone()));
-
         let mint_msg = HandleMsg::SetMinters {
             minters: vec![HumanAddr("not_admin".to_string())],
             padding: None,
@@ -1846,50 +1818,6 @@ mod tests {
         let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
         let error = extract_error_msg(handle_result);
         assert!(error.contains("allowed to minter accounts only"));
-    }
-
-    #[test]
-    fn test_handle_add_minters() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let handle_msg = HandleMsg::AddMinters {
-            minters: vec![HumanAddr("bob".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("Admin commands can only be run from admin address"));
-
-        let handle_msg = HandleMsg::AddMinters {
-            minters: vec![HumanAddr("bob".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        assert!(ensure_success(handle_result.unwrap()));
-
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(100),
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
-        assert!(ensure_success(handle_result.unwrap()));
-
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(100),
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        assert!(ensure_success(handle_result.unwrap()));
     }
 
     // Query tests
