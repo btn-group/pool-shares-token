@@ -252,16 +252,6 @@ impl<'a, S: Storage> Config<'a, S> {
         self.set_minters(minters)
     }
 
-    pub fn remove_minters(&mut self, minters_to_remove: Vec<HumanAddr>) -> StdResult<()> {
-        let mut minters = self.minters();
-
-        for minter in minters_to_remove {
-            minters.retain(|x| x != &minter);
-        }
-
-        self.set_minters(minters)
-    }
-
     pub fn minters(&mut self) -> Vec<HumanAddr> {
         self.as_readonly().minters()
     }

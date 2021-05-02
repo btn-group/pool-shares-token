@@ -120,10 +120,6 @@ pub enum HandleMsg {
         minters: Vec<HumanAddr>,
         padding: Option<String>,
     },
-    RemoveMinters {
-        minters: Vec<HumanAddr>,
-        padding: Option<String>,
-    },
     SetMinters {
         minters: Vec<HumanAddr>,
         padding: Option<String>,
