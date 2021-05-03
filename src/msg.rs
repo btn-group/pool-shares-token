@@ -89,12 +89,6 @@ pub enum HandleMsg {
         minters: Vec<HumanAddr>,
         padding: Option<String>,
     },
-
-    // Admin
-    ChangeAdmin {
-        address: HumanAddr,
-        padding: Option<String>,
-    },
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
@@ -157,11 +151,6 @@ pub enum HandleAnswer {
         status: ResponseStatus,
     },
     SetMinters {
-        status: ResponseStatus,
-    },
-
-    // Other
-    ChangeAdmin {
         status: ResponseStatus,
     },
 }

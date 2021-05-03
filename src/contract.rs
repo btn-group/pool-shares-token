@@ -25,8 +25,6 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
     env: Env,
     msg: InitMsg,
 ) -> StdResult<InitResponse> {
-    let total_supply: u128 = 0;
-
     // Check name, symbol, decimals
     if !is_valid_name(&msg.name) {
         return Err(StdError::generic_err(
@@ -54,7 +52,7 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
         admin: admin.clone(),
         prng_seed: prng_seed_hashed.to_vec(),
     })?;
-    config.set_total_supply(total_supply);
+    config.set_total_supply(0);
     config.set_minters(Vec::from([admin]))?;
 
     Ok(InitResponse::default())
@@ -125,7 +123,6 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
         } => try_mint(deps, env, recipient, amount),
 
         // Other
-        HandleMsg::ChangeAdmin { address, .. } => change_admin(deps, env, address),
         HandleMsg::SetMinters { minters, .. } => set_minters(deps, env, minters),
     };
 
@@ -232,26 +229,6 @@ fn query_minters<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>) -> StdR
     to_binary(&response)
 }
 
-fn change_admin<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
-    env: Env,
-    address: HumanAddr,
-) -> StdResult<HandleResponse> {
-    let mut config = Config::from_storage(&mut deps.storage);
-
-    check_if_admin(&config, &env.message.sender)?;
-
-    let mut consts = config.constants()?;
-    consts.admin = address;
-    config.set_constants(&consts)?;
-
-    Ok(HandleResponse {
-        messages: vec![],
-        log: vec![],
-        data: Some(to_binary(&HandleAnswer::ChangeAdmin { status: Success })?),
-    })
-}
-
 fn try_mint<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
@@ -260,12 +237,10 @@ fn try_mint<S: Storage, A: Api, Q: Querier>(
 ) -> StdResult<HandleResponse> {
     let mut config = Config::from_storage(&mut deps.storage);
 
-    if !is_admin(
-        &config,
-        &HumanAddr("this_account_does_not_exist".to_string()),
-    )? {
+    let minters_changed_count: u8 = config.minters_changed_count();
+    if minters_changed_count != 1 {
         return Err(StdError::generic_err(
-            "Tokens can't be minted until admin set to an account that doesn't exist",
+            "Minters must be changed once and only once",
         ));
     }
 
@@ -745,10 +720,15 @@ fn set_minters<S: Storage, A: Api, Q: Querier>(
     minters_to_set: Vec<HumanAddr>,
 ) -> StdResult<HandleResponse> {
     let mut config = Config::from_storage(&mut deps.storage);
+    let minters_changed_count: u8 = config.minters_changed_count();
 
+    if minters_changed_count == 1 {
+        return Err(StdError::generic_err("Minters can only be changed once"));
+    }
     check_if_admin(&config, &env.message.sender)?;
 
     config.set_minters(minters_to_set)?;
+    config.set_minters_changed_count(minters_changed_count + 1)?;
 
     Ok(HandleResponse {
         messages: vec![],
@@ -930,7 +910,6 @@ mod tests {
             | HandleAnswer::SendFrom { status }
             | HandleAnswer::BurnFrom { status }
             | HandleAnswer::Mint { status }
-            | HandleAnswer::ChangeAdmin { status }
             | HandleAnswer::SetMinters { status } => {
                 matches!(status, ResponseStatus::Success { .. })
             }
@@ -962,25 +941,31 @@ mod tests {
 
     #[test]
     fn test_handle_transfer() {
+        // Initialize
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let handle_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("this_account_does_not_exist".to_string()),
+
+        // Set bob as minter
+        let handle_msg = HandleMsg::SetMinters {
+            minters: vec![HumanAddr("bob".to_string())],
             padding: None,
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+
+        // Try mint to bob
         let mint_amount: u128 = 5000;
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("bob".to_string()),
             amount: Uint128(mint_amount),
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let _handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
 
+        // Transfer from bob to alice
         let handle_msg = HandleMsg::Transfer {
             recipient: HumanAddr("alice".to_string()),
             amount: Uint128(1000),
@@ -989,6 +974,8 @@ mod tests {
         let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
         let result = handle_result.unwrap();
         assert!(ensure_success(result));
+
+        // Check bob and alice's balances are correct after transfer
         let bob_canonical = deps
             .api
             .canonical_address(&HumanAddr("bob".to_string()))
@@ -1001,6 +988,7 @@ mod tests {
         assert_eq!(5000 - 1000, balances.account_amount(&bob_canonical));
         assert_eq!(1000, balances.account_amount(&alice_canonical));
 
+        // Try to transfer more than alice's balance to bob
         let handle_msg = HandleMsg::Transfer {
             recipient: HumanAddr("alice".to_string()),
             amount: Uint128(10000),
@@ -1013,17 +1001,22 @@ mod tests {
 
     #[test]
     fn test_handle_send() {
+        // Init
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let handle_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("this_account_does_not_exist".to_string()),
+
+        // Set minters as admin
+        let handle_msg = HandleMsg::SetMinters {
+            minters: vec![HumanAddr("admin".to_string())],
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        assert!(ensure_success(handle_result.unwrap()));
+
         let mint_amount: u128 = 5000;
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("bob".to_string()),
@@ -1189,17 +1182,23 @@ mod tests {
 
     #[test]
     fn test_handle_transfer_from() {
+        // Init
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let handle_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("this_account_does_not_exist".to_string()),
+
+        // Set admin as minter
+        let handle_msg = HandleMsg::SetMinters {
+            minters: vec![HumanAddr("admin".to_string())],
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        assert!(ensure_success(handle_result.unwrap()));
+
+        // Mint to bob
         let mint_amount: u128 = 5000;
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("bob".to_string()),
@@ -1316,17 +1315,23 @@ mod tests {
 
     #[test]
     fn test_handle_send_from() {
+        // Init
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let handle_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("this_account_does_not_exist".to_string()),
+
+        // Set admin as minter
+        let handle_msg = HandleMsg::SetMinters {
+            minters: vec![HumanAddr("admin".to_string())],
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        assert!(ensure_success(handle_result.unwrap()));
+
+        // Mint bob some tokens
         let mint_amount: u128 = 5000;
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("bob".to_string()),
@@ -1439,17 +1444,22 @@ mod tests {
 
     #[test]
     fn test_handle_burn_from() {
+        // Init
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let handle_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("this_account_does_not_exist".to_string()),
+
+        // Set minters as admin
+        let handle_msg = HandleMsg::SetMinters {
+            minters: vec![HumanAddr("admin".to_string())],
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        assert!(ensure_success(handle_result.unwrap()));
+
         let mint_amount: u128 = 5000;
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("bob".to_string()),
@@ -1677,52 +1687,23 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_change_admin() {
+    fn test_handle_burn() {
+        // Init
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let mint_amount: u128 = 5000;
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(mint_amount),
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
-        let handle_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("bob".to_string()),
+        // Set minters as admin
+        let handle_msg = HandleMsg::SetMinters {
+            minters: vec![HumanAddr("admin".to_string())],
             padding: None,
         };
         let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        assert!(
-            handle_result.is_ok(),
-            "handle() failed: {}",
-            handle_result.err().unwrap()
-        );
+        assert!(ensure_success(handle_result.unwrap()));
 
-        let admin = ReadonlyConfig::from_storage(&deps.storage)
-            .constants()
-            .unwrap()
-            .admin;
-        assert_eq!(admin, HumanAddr("bob".to_string()));
-    }
-
-    #[test]
-    fn test_handle_burn() {
-        let (init_result, mut deps) = init_helper();
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-        let handle_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("this_account_does_not_exist".to_string()),
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
         let mint_amount: u128 = 5000;
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("lebron".to_string()),
@@ -1750,26 +1731,33 @@ mod tests {
 
     #[test]
     fn test_handle_mint() {
+        // Init
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let handle_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("this_account_does_not_exist".to_string()),
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+
+        // Try mint
         let mint_amount: u128 = 5000;
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("lebron".to_string()),
             amount: Uint128(mint_amount),
             padding: None,
         };
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let error = extract_error_msg(handle_result);
+        assert!(error.contains("Minters must be changed once and only once"));
+
+        // Set minters
+        let handle_msg = HandleMsg::SetMinters {
+            minters: vec![HumanAddr("admin".to_string())],
+            padding: None,
+        };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
-        let supply = ReadonlyConfig::from_storage(&deps.storage).total_supply();
+        // Mint
         let mint_amount: u128 = 100;
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("lebron".to_string()),
@@ -1784,7 +1772,7 @@ mod tests {
         );
 
         let new_supply = ReadonlyConfig::from_storage(&deps.storage).total_supply();
-        assert_eq!(new_supply, supply + mint_amount);
+        assert_eq!(new_supply, mint_amount);
     }
 
     #[test]
@@ -1812,56 +1800,38 @@ mod tests {
         let handle_result = handle(&mut deps, mock_env("not_admin", &[]), mint_msg);
         let error = extract_error_msg(handle_result);
         assert!(error.contains(&admin_err.clone()));
-
-        let change_admin_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("not_admin".to_string()),
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("not_admin", &[]), change_admin_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains(&admin_err.clone()));
     }
 
     #[test]
     fn test_handle_set_minters() {
+        // Init
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let handle_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("this_account_does_not_exist".to_string()),
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let mint_amount: u128 = 5000;
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(mint_amount),
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
+        // Set minters as non-admin
         let handle_msg = HandleMsg::SetMinters {
             minters: vec![HumanAddr("bob".to_string())],
             padding: None,
         };
         let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
         let error = extract_error_msg(handle_result);
-        assert!(error.contains("Admin commands can only be run from admin address"));
+        assert!(error.contains(
+            "This is an admin command. Admin commands can only be run from admin address"
+        ));
 
+        // Set minters as admin
         let handle_msg = HandleMsg::SetMinters {
             minters: vec![HumanAddr("bob".to_string())],
             padding: None,
         };
-        let handle_result = handle(
-            &mut deps,
-            mock_env("this_account_does_not_exist", &[]),
-            handle_msg,
-        );
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
         assert!(ensure_success(handle_result.unwrap()));
 
+        // Mint as minter
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("bob".to_string()),
             amount: Uint128(100),
@@ -1870,16 +1840,13 @@ mod tests {
         let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
         assert!(ensure_success(handle_result.unwrap()));
 
+        // Mint as non-minter (admin)
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("bob".to_string()),
             amount: Uint128(100),
             padding: None,
         };
-        let handle_result = handle(
-            &mut deps,
-            mock_env("this_account_does_not_exist", &[]),
-            handle_msg,
-        );
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
         let error = extract_error_msg(handle_result);
         assert!(error.contains("allowed to minter accounts only"));
     }
@@ -1888,17 +1855,23 @@ mod tests {
 
     #[test]
     fn test_authenticated_queries() {
+        // Init
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let handle_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("this_account_does_not_exist".to_string()),
+
+        // Set minters as admin
+        let handle_msg = HandleMsg::SetMinters {
+            minters: vec![HumanAddr("admin".to_string())],
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        assert!(ensure_success(handle_result.unwrap()));
+
+        // Mint tokens to giannis
         let mint_amount: u128 = 5000;
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("giannis".to_string()),
@@ -1992,6 +1965,7 @@ mod tests {
 
     #[test]
     fn test_query_token_info() {
+        // Initialize
         let init_name = "sec-sec".to_string();
         let init_admin = HumanAddr("admin".to_string());
         let init_symbol = "SECSEC".to_string();
@@ -2011,11 +1985,16 @@ mod tests {
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let handle_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("this_account_does_not_exist".to_string()),
+
+        // Set admin as minter
+        let handle_msg = HandleMsg::SetMinters {
+            minters: vec![HumanAddr("admin".to_string())],
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        assert!(ensure_success(handle_result.unwrap()));
+
+        // Mint tokens to giannis
         let mint_amount: u128 = 5000;
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("giannis".to_string()),
@@ -2024,6 +2003,7 @@ mod tests {
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
+        // Query TokenInfo
         let query_msg = QueryMsg::TokenInfo {};
         let query_result = query(&deps, query_msg);
         assert!(
@@ -2056,14 +2036,7 @@ mod tests {
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let mint_amount: u128 = 5000;
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("giannis".to_string()),
-            amount: Uint128(mint_amount),
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-
+        let _mint_amount: u128 = 5000;
         let handle_msg = HandleMsg::IncreaseAllowance {
             spender: HumanAddr("lebron".to_string()),
             amount: Uint128(2000),
@@ -2163,25 +2136,15 @@ mod tests {
 
     #[test]
     fn test_query_balance() {
+        // Initialize
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let handle_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("this_account_does_not_exist".to_string()),
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let mint_amount: u128 = 5000;
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(mint_amount),
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
+        // Set viewing key
         let handle_msg = HandleMsg::SetViewingKey {
             key: "key".to_string(),
             padding: None,
@@ -2197,6 +2160,7 @@ mod tests {
             .unwrap(),
         );
 
+        // Query balance with the wrong key
         let query_msg = QueryMsg::Balance {
             address: HumanAddr("bob".to_string()),
             key: "wrong_key".to_string(),
@@ -2205,6 +2169,7 @@ mod tests {
         let error = extract_error_msg(query_result);
         assert!(error.contains("Wrong viewing key"));
 
+        // Query balance with the correct key
         let query_msg = QueryMsg::Balance {
             address: HumanAddr("bob".to_string()),
             key: "key".to_string(),
@@ -2214,30 +2179,37 @@ mod tests {
             QueryAnswer::Balance { amount } => amount,
             _ => panic!("Unexpected"),
         };
-        assert_eq!(balance, Uint128(5000));
+        assert_eq!(balance, Uint128(0));
     }
 
     #[test]
     fn test_query_transfer_history() {
+        // Initialize
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let handle_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("this_account_does_not_exist".to_string()),
+
+        // Set bob as minter
+        let handle_msg = HandleMsg::SetMinters {
+            minters: vec![HumanAddr("bob".to_string())],
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let mint_amount: u128 = 5000;
+        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        assert!(ensure_success(handle_result.unwrap()));
+
+        // Bob mints himself some coins
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(mint_amount),
+            amount: Uint128(4000),
             padding: None,
         };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
+        assert!(ensure_success(handle_result.unwrap()));
 
+        // Bob sets himself a viewing key
         let handle_msg = HandleMsg::SetViewingKey {
             key: "key".to_string(),
             padding: None,
@@ -2245,6 +2217,7 @@ mod tests {
         let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
         assert!(ensure_success(handle_result.unwrap()));
 
+        // Bob transfers alice some tokens
         let handle_msg = HandleMsg::Transfer {
             recipient: HumanAddr("alice".to_string()),
             amount: Uint128(1000),
@@ -2253,6 +2226,8 @@ mod tests {
         let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
         let result = handle_result.unwrap();
         assert!(ensure_success(result));
+
+        // Bob transfers banana some tokens
         let handle_msg = HandleMsg::Transfer {
             recipient: HumanAddr("banana".to_string()),
             amount: Uint128(500),
@@ -2261,6 +2236,8 @@ mod tests {
         let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
         let result = handle_result.unwrap();
         assert!(ensure_success(result));
+
+        // Bob transfers mango some tokens
         let handle_msg = HandleMsg::Transfer {
             recipient: HumanAddr("mango".to_string()),
             amount: Uint128(2500),
@@ -2270,6 +2247,7 @@ mod tests {
         let result = handle_result.unwrap();
         assert!(ensure_success(result));
 
+        // Bob queries his txns with a 0 page_size
         let query_msg = QueryMsg::TransferHistory {
             address: HumanAddr("bob".to_string()),
             key: "key".to_string(),
@@ -2277,14 +2255,13 @@ mod tests {
             page_size: 0,
         };
         let query_result = query(&deps, query_msg);
-        // let a: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
-        // println!("{:?}", a);
         let transfers = match from_binary(&query_result.unwrap()).unwrap() {
             QueryAnswer::TransferHistory { txs } => txs,
             _ => panic!("Unexpected"),
         };
         assert!(transfers.is_empty());
 
+        // Bob queries his txns with a 10 page_size
         let query_msg = QueryMsg::TransferHistory {
             address: HumanAddr("bob".to_string()),
             key: "key".to_string(),
@@ -2298,6 +2275,7 @@ mod tests {
         };
         assert_eq!(transfers.len(), 3);
 
+        // Bob queries his txns with a 2 page_size
         let query_msg = QueryMsg::TransferHistory {
             address: HumanAddr("bob".to_string()),
             key: "key".to_string(),

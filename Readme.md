@@ -8,11 +8,12 @@ This is an adaptation of enigmampc's snip20-reference-impl[https://github.com/en
 2. Remove #query_exchange_rate.
 3. Remove all references to contract status.
 4. Remove ability to remove minters.
-5. Remove ability to add minters.
+5. Remove ability to add minters (can still set minters).
 6. Remove ability to make total supply private.
 7. Remove ability to set initial balances.
 8. Allow people to see who the admin is.
-9. Only allow minting when the admin is set to an account that does not exist.
+9. Prevent ability for admin to cheat the minting system.
+11. Remove ability to change admin.
 
 ## TO DO - ADAPT THIS TO THIS README
 

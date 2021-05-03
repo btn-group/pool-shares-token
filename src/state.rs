@@ -20,6 +20,7 @@ pub const PREFIX_TXS: &[u8] = b"transfers";
 pub const KEY_CONSTANTS: &[u8] = b"constants";
 pub const KEY_TOTAL_SUPPLY: &[u8] = b"total_supply";
 pub const KEY_MINTERS: &[u8] = b"minters";
+pub const KEY_MINTERS_CHANGED_COUNT: &[u8] = b"minters_changed_count";
 pub const KEY_TX_COUNT: &[u8] = b"tx-count";
 
 pub const PREFIX_CONFIG: &[u8] = b"config";
@@ -177,6 +178,10 @@ impl<'a, S: ReadonlyStorage> ReadonlyConfig<'a, S> {
         self.as_readonly().constants()
     }
 
+    pub fn minters_changed_count(&self) -> u8 {
+        self.as_readonly().minters_changed_count()
+    }
+
     pub fn total_supply(&self) -> u128 {
         self.as_readonly().total_supply()
     }
@@ -231,6 +236,10 @@ impl<'a, S: Storage> Config<'a, S> {
         set_bin_data(&mut self.storage, KEY_CONSTANTS, constants)
     }
 
+    pub fn minters_changed_count(&self) -> u8 {
+        self.as_readonly().minters_changed_count()
+    }
+
     pub fn total_supply(&self) -> u128 {
         self.as_readonly().total_supply()
     }
@@ -241,6 +250,14 @@ impl<'a, S: Storage> Config<'a, S> {
 
     pub fn set_minters(&mut self, minters_to_set: Vec<HumanAddr>) -> StdResult<()> {
         set_bin_data(&mut self.storage, KEY_MINTERS, &minters_to_set)
+    }
+
+    pub fn set_minters_changed_count(&mut self, count: u8) -> StdResult<()> {
+        set_bin_data(
+            &mut self.storage,
+            KEY_MINTERS_CHANGED_COUNT,
+            &count.to_be_bytes(),
+        )
     }
 
     pub fn minters(&mut self) -> Vec<HumanAddr> {
@@ -284,6 +301,10 @@ impl<'a, S: ReadonlyStorage> ReadonlyConfigImpl<'a, S> {
 
     fn minters(&self) -> Vec<HumanAddr> {
         get_bin_data(self.0, KEY_MINTERS).unwrap()
+    }
+
+    fn minters_changed_count(&self) -> u8 {
+        get_bin_data(self.0, KEY_MINTERS_CHANGED_COUNT).unwrap_or_default()
     }
 
     pub fn tx_count(&self) -> u64 {
