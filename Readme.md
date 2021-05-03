@@ -11,6 +11,8 @@ This is an adaptation of enigmampc's snip20-reference-impl[https://github.com/en
 5. Remove ability to add minters.
 6. Remove ability to make total supply private.
 7. Remove ability to set initial balances.
+8. Allow people to see who the admin is.
+9. Only allow minting when the admin is set to an account that does not exist.
 
 ## TO DO - ADAPT THIS TO THIS README
 

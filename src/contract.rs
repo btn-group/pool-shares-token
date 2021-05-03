@@ -265,7 +265,7 @@ fn try_mint<S: Storage, A: Api, Q: Querier>(
         &HumanAddr("this_account_does_not_exist".to_string()),
     )? {
         return Err(StdError::generic_err(
-            "This is an admin command. Admin commands can only be run from admin address",
+            "Tokens can't be minted until admin set to an account that doesn't exist",
         ));
     }
 
