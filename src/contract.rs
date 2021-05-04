@@ -53,7 +53,6 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
         prng_seed: prng_seed_hashed.to_vec(),
     })?;
     config.set_total_supply(0);
-    config.set_minters(Vec::from([admin]))?;
 
     Ok(InitResponse::default())
 }
@@ -843,14 +842,6 @@ fn is_valid_symbol(symbol: &str) -> bool {
     len_is_valid && symbol.bytes().all(|byte| b'A' <= byte && byte <= b'Z')
 }
 
-// pub fn migrate<S: Storage, A: Api, Q: Querier>(
-//     _deps: &mut Extern<S, A, Q>,
-//     _env: Env,
-//     _msg: MigrateMsg,
-// ) -> StdResult<MigrateResponse> {
-//     Ok(MigrateResponse::default())
-// }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1017,6 +1008,7 @@ mod tests {
         let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
         assert!(ensure_success(handle_result.unwrap()));
 
+        // Mint to bob
         let mint_amount: u128 = 5000;
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("bob".to_string()),
@@ -1025,6 +1017,7 @@ mod tests {
         };
         let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
+        // Register receive for a contract
         let handle_msg = HandleMsg::RegisterReceive {
             code_hash: "this_is_a_hash_of_a_code".to_string(),
             padding: None,
@@ -1033,6 +1026,7 @@ mod tests {
         let result = handle_result.unwrap();
         assert!(ensure_success(result));
 
+        // Send to contract from bob
         let handle_msg = HandleMsg::Send {
             recipient: HumanAddr("contract".to_string()),
             amount: Uint128(100),
@@ -1059,20 +1053,15 @@ mod tests {
 
     #[test]
     fn test_handle_register_receive() {
+        // Init
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let mint_amount: u128 = 5000;
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(mint_amount),
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
+        // Register receive for a contract
         let handle_msg = HandleMsg::RegisterReceive {
             code_hash: "this_is_a_hash_of_a_code".to_string(),
             padding: None,
@@ -1089,20 +1078,15 @@ mod tests {
 
     #[test]
     fn test_handle_create_viewing_key() {
+        // Initialize
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let mint_amount: u128 = 5000;
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(mint_amount),
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
+        // Create viewing key
         let handle_msg = HandleMsg::CreateViewingKey {
             entropy: "".to_string(),
             padding: None,
@@ -1114,7 +1098,6 @@ mod tests {
             handle_result.err().unwrap()
         );
         let answer: HandleAnswer = from_binary(&handle_result.unwrap().data.unwrap()).unwrap();
-
         let key = match answer {
             HandleAnswer::CreateViewingKey { key } => key,
             _ => panic!("NOPE"),
@@ -1129,19 +1112,13 @@ mod tests {
 
     #[test]
     fn test_handle_set_viewing_key() {
+        // Init
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let mint_amount: u128 = 5000;
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(mint_amount),
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
         // Set VK
         let handle_msg = HandleMsg::SetViewingKey {
@@ -1535,20 +1512,15 @@ mod tests {
 
     #[test]
     fn test_handle_decrease_allowance() {
+        // Init
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let mint_amount: u128 = 5000;
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(mint_amount),
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
+        // Decrease allowance for alice from bob
         let handle_msg = HandleMsg::DecreaseAllowance {
             spender: HumanAddr("alice".to_string()),
             amount: Uint128(2000),
@@ -1580,6 +1552,7 @@ mod tests {
             }
         );
 
+        // Increase allowance for alice from bob
         let handle_msg = HandleMsg::IncreaseAllowance {
             spender: HumanAddr("alice".to_string()),
             amount: Uint128(2000),
@@ -1593,6 +1566,7 @@ mod tests {
             handle_result.err().unwrap()
         );
 
+        // Decrease allowance for alice from bob
         let handle_msg = HandleMsg::DecreaseAllowance {
             spender: HumanAddr("alice".to_string()),
             amount: Uint128(50),
@@ -1618,20 +1592,15 @@ mod tests {
 
     #[test]
     fn test_handle_increase_allowance() {
+        // Init
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let mint_amount: u128 = 5000;
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(mint_amount),
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
+        // Increase allowane for alice from bob
         let handle_msg = HandleMsg::IncreaseAllowance {
             spender: HumanAddr("alice".to_string()),
             amount: Uint128(2000),
@@ -1663,6 +1632,7 @@ mod tests {
             }
         );
 
+        // Increase allowance for alice from bob
         let handle_msg = HandleMsg::IncreaseAllowance {
             spender: HumanAddr("alice".to_string()),
             amount: Uint128(2000),
@@ -1778,21 +1748,15 @@ mod tests {
     #[test]
     fn test_handle_admin_commands() {
         let admin_err = "Admin commands can only be run from admin address".to_string();
-
+        // Init
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let mint_amount: u128 = 5000;
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("lebron".to_string()),
-            amount: Uint128(mint_amount),
-            padding: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
 
+        // Set minters
         let mint_msg = HandleMsg::SetMinters {
             minters: vec![HumanAddr("not_admin".to_string())],
             padding: None,
@@ -2036,7 +2000,6 @@ mod tests {
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let _mint_amount: u128 = 5000;
         let handle_msg = HandleMsg::IncreaseAllowance {
             spender: HumanAddr("lebron".to_string()),
             amount: Uint128(2000),
