@@ -188,18 +188,6 @@ pub enum HandleMsg {
         actions: Vec<batch::MintAction>,
         padding: Option<String>,
     },
-    AddMinters {
-        minters: Vec<HumanAddr>,
-        padding: Option<String>,
-    },
-    RemoveMinters {
-        minters: Vec<HumanAddr>,
-        padding: Option<String>,
-    },
-    SetMinters {
-        minters: Vec<HumanAddr>,
-        padding: Option<String>,
-    },
 
     // Admin
     ChangeAdmin {
