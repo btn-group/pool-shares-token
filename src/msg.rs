@@ -18,7 +18,6 @@ pub struct InitialBalance {
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct InitMsg {
     pub name: String,
-    pub admin: Option<HumanAddr>,
     pub symbol: String,
     pub decimals: u8,
     pub initial_balances: Option<Vec<InitialBalance>>,
@@ -188,16 +187,6 @@ pub enum HandleMsg {
         actions: Vec<batch::MintAction>,
         padding: Option<String>,
     },
-
-    // Admin
-    ChangeAdmin {
-        address: HumanAddr,
-        padding: Option<String>,
-    },
-    SetContractStatus {
-        level: ContractStatusLevel,
-        padding: Option<String>,
-    },
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
@@ -272,23 +261,6 @@ pub enum HandleAnswer {
         status: ResponseStatus,
     },
     BatchMint {
-        status: ResponseStatus,
-    },
-    AddMinters {
-        status: ResponseStatus,
-    },
-    RemoveMinters {
-        status: ResponseStatus,
-    },
-    SetMinters {
-        status: ResponseStatus,
-    },
-
-    // Other
-    ChangeAdmin {
-        status: ResponseStatus,
-    },
-    SetContractStatus {
         status: ResponseStatus,
     },
 }

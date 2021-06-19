@@ -4,6 +4,10 @@ Pool shares token template used by btn.group built on the Secret network blockch
 
 ## Changes made to standard SNIP-20/SNIP-21 implementations
 
+1. Remove ability to change initial minters.
+2. Remove all reference to admin.
+3. Remove ability to change initial contract status.
+
 ## References
 
 1. https://github.com/enigmampc/snip20-reference-impl
