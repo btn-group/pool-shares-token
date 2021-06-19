@@ -9,18 +9,11 @@ use crate::batch;
 use crate::transaction_history::{RichTx, Tx};
 use crate::viewing_key::ViewingKey;
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema)]
-pub struct InitialBalance {
-    pub address: HumanAddr,
-    pub amount: Uint128,
-}
-
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct InitMsg {
     pub name: String,
     pub symbol: String,
     pub decimals: u8,
-    pub initial_balances: Option<Vec<InitialBalance>>,
     pub prng_seed: Binary,
     pub config: Option<InitConfig>,
 }

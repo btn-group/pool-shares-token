@@ -24,15 +24,6 @@
       "format": "uint8",
       "minimum": 0.0
     },
-    "initial_balances": {
-      "type": [
-        "array",
-        "null"
-      ],
-      "items": {
-        "$ref": "#/definitions/InitialBalance"
-      }
-    },
     "name": {
       "type": "string"
     },
@@ -46,9 +37,6 @@
   "definitions": {
     "Binary": {
       "description": "Binary is a wrapper around Vec<u8> to add base64 de/serialization with serde. It also adds some helper methods to help encode inline.\n\nThis is only needed as serde-json-{core,wasm} has a horrible encoding for Vec<u8>",
-      "type": "string"
-    },
-    "HumanAddr": {
       "type": "string"
     },
     "InitConfig": {
@@ -91,24 +79,6 @@
           ]
         }
       }
-    },
-    "InitialBalance": {
-      "type": "object",
-      "required": [
-        "address",
-        "amount"
-      ],
-      "properties": {
-        "address": {
-          "$ref": "#/definitions/HumanAddr"
-        },
-        "amount": {
-          "$ref": "#/definitions/Uint128"
-        }
-      }
-    },
-    "Uint128": {
-      "type": "string"
     }
   }
 }
