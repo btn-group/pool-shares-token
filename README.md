@@ -6,7 +6,7 @@ Pool shares token template used by btn.group built on the Secret network blockch
 
 1. Remove ability to change initial minters.
 2. Remove all reference to admin.
-3. Remove ability to change initial contract status.
+3. Remove ability to change contract status.
 4. Remove ability to deposit and redeem native tokens.
 5. Remove ability to set initial balances.
 
