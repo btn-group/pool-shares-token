@@ -164,6 +164,7 @@ pub fn query<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>, msg: QueryM
         QueryMsg::TokenInfo {} => query_token_info(&deps.storage),
         QueryMsg::TokenConfig {} => query_token_config(&deps.storage),
         QueryMsg::ContractStatus {} => query_contract_status(&deps.storage),
+        QueryMsg::ExchangeRate {} => query_exchange_rate(),
         QueryMsg::Minters { .. } => query_minters(deps),
         _ => authenticated_queries(deps, msg),
     }
@@ -209,6 +210,13 @@ pub fn authenticated_queries<S: Storage, A: Api, Q: Querier>(
     Ok(to_binary(&QueryAnswer::ViewingKeyError {
         msg: "Wrong viewing key for this address or viewing key not set".to_string(),
     })?)
+}
+
+fn query_exchange_rate() -> QueryResult {
+    to_binary(&QueryAnswer::ExchangeRate {
+        rate: Uint128(0),
+        denom: String::new(),
+    })
 }
 
 fn query_token_info<S: ReadonlyStorage>(storage: &S) -> QueryResult {
@@ -2743,6 +2751,32 @@ mod tests {
             _ => panic!("Unexpected"),
         };
         assert_eq!(balance, Uint128(5000));
+    }
+
+    #[test]
+    fn test_query_exchange_rate() {
+        let (init_result, deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let query_msg = QueryMsg::ExchangeRate {};
+        let query_result = query(&deps, query_msg);
+        assert!(
+            query_result.is_ok(),
+            "Init failed: {}",
+            query_result.err().unwrap()
+        );
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::ExchangeRate { rate, denom } => {
+                assert_eq!(rate, Uint128(0));
+                assert_eq!(denom, "");
+            }
+            _ => panic!("unexpected"),
+        }
     }
 
     #[test]
