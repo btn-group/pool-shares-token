@@ -1,9 +1,8 @@
 /// This contract implements SNIP-20 standard:
 /// https://github.com/SecretFoundation/SNIPs/blob/master/SNIP-20.md
 use cosmwasm_std::{
-    log, to_binary, Api, Binary, CanonicalAddr, Coin, CosmosMsg, Env, Extern, HandleResponse,
-    HumanAddr, InitResponse, Querier, QueryResult, ReadonlyStorage, StdError, StdResult, Storage,
-    Uint128,
+    log, to_binary, Api, Binary, CanonicalAddr, CosmosMsg, Env, Extern, HandleResponse, HumanAddr,
+    InitResponse, Querier, QueryResult, ReadonlyStorage, StdError, StdResult, Storage, Uint128,
 };
 
 use crate::batch;
@@ -45,37 +44,7 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
 
     let init_config = msg.config();
     let contract_initializer = env.message.sender;
-    let canon_contract_initializer = deps.api.canonical_address(&contract_initializer)?;
-
-    let mut total_supply: u128 = 0;
-    {
-        let initial_balances = msg.initial_balances.unwrap_or_default();
-        for balance in initial_balances {
-            let balance_address = deps.api.canonical_address(&balance.address)?;
-            let amount = balance.amount.u128();
-            let mut balances = Balances::from_storage(&mut deps.storage);
-            balances.set_account_balance(&balance_address, amount);
-            if let Some(new_total_supply) = total_supply.checked_add(amount) {
-                total_supply = new_total_supply;
-            } else {
-                return Err(StdError::generic_err(
-                    "The sum of all initial balances exceeds the maximum possible total supply",
-                ));
-            }
-            store_mint(
-                &mut deps.storage,
-                &canon_contract_initializer,
-                &balance_address,
-                balance.amount,
-                msg.symbol.clone(),
-                Some("Initial Balance".to_string()),
-                &env.block,
-            )?;
-        }
-    }
-
     let prng_seed_hashed = sha_256(&msg.prng_seed.0);
-
     let mut config = Config::from_storage(&mut deps.storage);
     config.set_constants(&Constants {
         name: msg.name,
@@ -88,7 +57,7 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
         mint_is_enabled: init_config.mint_enabled(),
         burn_is_enabled: init_config.burn_enabled(),
     })?;
-    config.set_total_supply(total_supply);
+    config.set_total_supply(0);
     config.set_contract_status(ContractStatusLevel::NormalRun);
     let minters = if init_config.mint_enabled() {
         Vec::from([contract_initializer])
@@ -1292,17 +1261,17 @@ fn is_valid_symbol(symbol: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::msg::InitConfig;
     use crate::msg::ResponseStatus;
-    use crate::msg::{InitConfig, InitialBalance};
     use cosmwasm_std::testing::*;
-    use cosmwasm_std::{from_binary, BlockInfo, ContractInfo, MessageInfo, QueryResponse, WasmMsg};
+    use cosmwasm_std::{
+        from_binary, BlockInfo, Coin, ContractInfo, MessageInfo, QueryResponse, WasmMsg,
+    };
     use std::any::Any;
 
     // Helper functions
 
-    fn init_helper(
-        initial_balances: Vec<InitialBalance>,
-    ) -> (
+    fn init_helper() -> (
         StdResult<InitResponse>,
         Extern<MockStorage, MockApi, MockQuerier>,
     ) {
@@ -1313,7 +1282,6 @@ mod tests {
             name: "sec-sec".to_string(),
             symbol: "SECSEC".to_string(),
             decimals: 8,
-            initial_balances: Some(initial_balances),
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             config: None,
         };
@@ -1322,7 +1290,6 @@ mod tests {
     }
 
     fn init_helper_with_config(
-        initial_balances: Vec<InitialBalance>,
         enable_deposit: bool,
         enable_redeem: bool,
         enable_mint: bool,
@@ -1357,37 +1324,11 @@ mod tests {
             name: "sec-sec".to_string(),
             symbol: "SECSEC".to_string(),
             decimals: 8,
-            initial_balances: Some(initial_balances),
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             config: Some(init_config),
         };
 
         (init(&mut deps, env, init_msg), deps)
-    }
-
-    /// Will return a ViewingKey only for the first account in `initial_balances`
-    fn _auth_query_helper(
-        initial_balances: Vec<InitialBalance>,
-    ) -> (ViewingKey, Extern<MockStorage, MockApi, MockQuerier>) {
-        let (init_result, mut deps) = init_helper(initial_balances.clone());
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let account = initial_balances[0].address.clone();
-        let create_vk_msg = HandleMsg::CreateViewingKey {
-            entropy: "42".to_string(),
-            padding: None,
-        };
-        let handle_response = handle(&mut deps, mock_env(account.0, &[]), create_vk_msg).unwrap();
-        let vk = match from_binary(&handle_response.data.unwrap()).unwrap() {
-            HandleAnswer::CreateViewingKey { key } => key,
-            _ => panic!("Unexpected result from handle"),
-        };
-
-        (vk, deps)
     }
 
     fn extract_error_msg<T: Any>(error: StdResult<T>) -> String {
@@ -1434,11 +1375,21 @@ mod tests {
 
     #[test]
     fn test_init_sanity() {
-        let (init_result, deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("lebron".to_string()),
+        let (init_result, mut deps) = init_helper_with_config(true, true, true, true, 0);
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        // Mint
+        let handle_msg = HandleMsg::Mint {
+            recipient: HumanAddr("lebron".to_string()),
             amount: Uint128(5000),
-        }]);
-        assert_eq!(init_result.unwrap(), InitResponse::default());
+            memo: None,
+            padding: None,
+        };
+        handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg).unwrap();
 
         let config = ReadonlyConfig::from_storage(&deps.storage);
         let constants = config.constants().unwrap();
@@ -1456,18 +1407,17 @@ mod tests {
 
     #[test]
     fn test_init_with_config_sanity() {
-        let (init_result, deps) = init_helper_with_config(
-            vec![InitialBalance {
-                address: HumanAddr("lebron".to_string()),
-                amount: Uint128(5000),
-            }],
-            true,
-            true,
-            true,
-            true,
-            0,
-        );
+        let (init_result, mut deps) = init_helper_with_config(true, true, true, true, 0);
         assert_eq!(init_result.unwrap(), InitResponse::default());
+
+        // Mint
+        let handle_msg = HandleMsg::Mint {
+            recipient: HumanAddr("lebron".to_string()),
+            amount: Uint128(5000),
+            memo: None,
+            padding: None,
+        };
+        handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg).unwrap();
 
         let config = ReadonlyConfig::from_storage(&deps.storage);
         let constants = config.constants().unwrap();
@@ -1487,48 +1437,25 @@ mod tests {
         assert_eq!(constants.burn_is_enabled, true);
     }
 
-    #[test]
-    fn test_total_supply_overflow() {
-        let (init_result, _deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("lebron".to_string()),
-            amount: Uint128(u128::max_value()),
-        }]);
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let (init_result, _deps) = init_helper(vec![
-            InitialBalance {
-                address: HumanAddr("lebron".to_string()),
-                amount: Uint128(u128::max_value()),
-            },
-            InitialBalance {
-                address: HumanAddr("giannis".to_string()),
-                amount: Uint128(1),
-            },
-        ]);
-        let error = extract_error_msg(init_result);
-        assert_eq!(
-            error,
-            "The sum of all initial balances exceeds the maximum possible total supply"
-        );
-    }
-
     // Handle tests
 
     #[test]
     fn test_handle_transfer() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
+        let (init_result, mut deps) = init_helper_with_config(true, true, true, true, 0);
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
+
+        // Mint
+        let handle_msg = HandleMsg::Mint {
+            recipient: HumanAddr("bob".to_string()),
+            amount: Uint128(5000),
+            memo: None,
+            padding: None,
+        };
+        handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg).unwrap();
 
         let handle_msg = HandleMsg::Transfer {
             recipient: HumanAddr("alice".to_string()),
@@ -1564,15 +1491,21 @@ mod tests {
 
     #[test]
     fn test_handle_send() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
+        let (init_result, mut deps) = init_helper_with_config(true, true, true, true, 0);
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
+
+        // Mint
+        let handle_msg = HandleMsg::Mint {
+            recipient: HumanAddr("bob".to_string()),
+            amount: Uint128(5000),
+            memo: None,
+            padding: None,
+        };
+        handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg).unwrap();
 
         let handle_msg = HandleMsg::RegisterReceive {
             code_hash: "this_is_a_hash_of_a_code".to_string(),
@@ -1610,10 +1543,7 @@ mod tests {
 
     #[test]
     fn test_handle_register_receive() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
+        let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
@@ -1636,10 +1566,7 @@ mod tests {
 
     #[test]
     fn test_handle_create_viewing_key() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
+        let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
@@ -1672,10 +1599,7 @@ mod tests {
 
     #[test]
     fn test_handle_set_viewing_key() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
+        let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
@@ -1721,15 +1645,21 @@ mod tests {
 
     #[test]
     fn test_handle_transfer_from() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
+        let (init_result, mut deps) = init_helper_with_config(true, true, true, true, 0);
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
+
+        // Mint
+        let handle_msg = HandleMsg::Mint {
+            recipient: HumanAddr("bob".to_string()),
+            amount: Uint128(5000),
+            memo: None,
+            padding: None,
+        };
+        handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg).unwrap();
 
         // Transfer before allowance
         let handle_msg = HandleMsg::TransferFrom {
@@ -1844,15 +1774,21 @@ mod tests {
 
     #[test]
     fn test_handle_send_from() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
+        let (init_result, mut deps) = init_helper_with_config(true, true, true, true, 0);
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
+
+        // Mint
+        let handle_msg = HandleMsg::Mint {
+            recipient: HumanAddr("bob".to_string()),
+            amount: Uint128(5000),
+            memo: None,
+            padding: None,
+        };
+        handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg).unwrap();
 
         // Send before allowance
         let handle_msg = HandleMsg::SendFrom {
@@ -1963,27 +1899,23 @@ mod tests {
 
     #[test]
     fn test_handle_burn_from() {
-        let (init_result, mut deps) = init_helper_with_config(
-            vec![InitialBalance {
-                address: HumanAddr("bob".to_string()),
-                amount: Uint128(10000),
-            }],
-            false,
-            false,
-            false,
-            true,
-            0,
-        );
+        let (init_result, mut deps) = init_helper_with_config(true, true, true, true, 0);
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
 
-        let (init_result_for_failure, mut deps_for_failure) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
+        // Mint
+        let handle_msg = HandleMsg::Mint {
+            recipient: HumanAddr("bob".to_string()),
             amount: Uint128(10000),
-        }]);
+            memo: None,
+            padding: None,
+        };
+        handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg).unwrap();
+
+        let (init_result_for_failure, mut deps_for_failure) = init_helper();
         assert!(
             init_result_for_failure.is_ok(),
             "Init failed: {}",
@@ -2071,37 +2003,37 @@ mod tests {
 
     #[test]
     fn test_handle_batch_burn_from() {
-        let (init_result, mut deps) = init_helper_with_config(
-            vec![
-                InitialBalance {
-                    address: HumanAddr("bob".to_string()),
-                    amount: Uint128(10000),
-                },
-                InitialBalance {
-                    address: HumanAddr("jerry".to_string()),
-                    amount: Uint128(10000),
-                },
-                InitialBalance {
-                    address: HumanAddr("mike".to_string()),
-                    amount: Uint128(10000),
-                },
-            ],
-            false,
-            false,
-            false,
-            true,
-            0,
-        );
+        let (init_result, mut deps) = init_helper_with_config(true, true, true, true, 0);
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
 
-        let (init_result_for_failure, mut deps_for_failure) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(10000),
-        }]);
+        // Mint
+        let handle_msg = HandleMsg::BatchMint {
+            actions: vec![
+                batch::MintAction {
+                    recipient: HumanAddr("bob".to_string()),
+                    amount: Uint128(10000),
+                    memo: None,
+                },
+                batch::MintAction {
+                    recipient: HumanAddr("jerry".to_string()),
+                    amount: Uint128(10000),
+                    memo: None,
+                },
+                batch::MintAction {
+                    recipient: HumanAddr("mike".to_string()),
+                    amount: Uint128(10000),
+                    memo: None,
+                },
+            ],
+            padding: None,
+        };
+        handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg).unwrap();
+
+        let (init_result_for_failure, mut deps_for_failure) = init_helper();
         assert!(
             init_result_for_failure.is_ok(),
             "Init failed: {}",
@@ -2243,10 +2175,7 @@ mod tests {
 
     #[test]
     fn test_handle_decrease_allowance() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
+        let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
@@ -2322,10 +2251,7 @@ mod tests {
 
     #[test]
     fn test_handle_increase_allowance() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
+        let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
@@ -2388,27 +2314,23 @@ mod tests {
 
     #[test]
     fn test_handle_burn() {
-        let (init_result, mut deps) = init_helper_with_config(
-            vec![InitialBalance {
-                address: HumanAddr("lebron".to_string()),
-                amount: Uint128(5000),
-            }],
-            false,
-            false,
-            false,
-            true,
-            0,
-        );
+        let (init_result, mut deps) = init_helper_with_config(true, true, true, true, 0);
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
 
-        let (init_result_for_failure, mut deps_for_failure) = init_helper(vec![InitialBalance {
-            address: HumanAddr("lebron".to_string()),
-            amount: Uint128(5000),
-        }]);
+        // Mint
+        let handle_msg = HandleMsg::Mint {
+            recipient: HumanAddr("lebron".to_string()),
+            amount: Uint128(10000),
+            memo: None,
+            padding: None,
+        };
+        handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg).unwrap();
+
+        let (init_result_for_failure, mut deps_for_failure) = init_helper();
         assert!(
             init_result_for_failure.is_ok(),
             "Init failed: {}",
@@ -2444,26 +2366,13 @@ mod tests {
 
     #[test]
     fn test_handle_mint() {
-        let (init_result, mut deps) = init_helper_with_config(
-            vec![InitialBalance {
-                address: HumanAddr("lebron".to_string()),
-                amount: Uint128(5000),
-            }],
-            false,
-            false,
-            true,
-            false,
-            0,
-        );
+        let (init_result, mut deps) = init_helper_with_config(false, false, true, false, 0);
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let (init_result_for_failure, mut deps_for_failure) = init_helper(vec![InitialBalance {
-            address: HumanAddr("lebron".to_string()),
-            amount: Uint128(5000),
-        }]);
+        let (init_result_for_failure, mut deps_for_failure) = init_helper();
         assert!(
             init_result_for_failure.is_ok(),
             "Init failed: {}",
@@ -2508,15 +2417,21 @@ mod tests {
 
     #[test]
     fn test_authenticated_queries() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("giannis".to_string()),
-            amount: Uint128(5000),
-        }]);
+        let (init_result, mut deps) = init_helper_with_config(true, true, true, true, 0);
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
+
+        // Mint
+        let handle_msg = HandleMsg::Mint {
+            recipient: HumanAddr("giannis".to_string()),
+            amount: Uint128(5000),
+            memo: None,
+            padding: None,
+        };
+        handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg).unwrap();
 
         let no_vk_yet_query_msg = QueryMsg::Balance {
             address: HumanAddr("giannis".to_string()),
@@ -2572,18 +2487,12 @@ mod tests {
             r#"{ "public_total_supply": true }"#.as_bytes(),
         ))
         .unwrap();
-        let init_supply = Uint128(5000);
-
         let mut deps = mock_dependencies(20, &[]);
         let env = mock_env("instantiator", &[]);
         let init_msg = InitMsg {
             name: init_name.clone(),
             symbol: init_symbol.clone(),
             decimals: init_decimals.clone(),
-            initial_balances: Some(vec![InitialBalance {
-                address: HumanAddr("giannis".to_string()),
-                amount: init_supply,
-            }]),
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             config: Some(init_config),
         };
@@ -2612,7 +2521,7 @@ mod tests {
                 assert_eq!(name, init_name);
                 assert_eq!(symbol, init_symbol);
                 assert_eq!(decimals, init_decimals);
-                assert_eq!(total_supply, Some(Uint128(5000)));
+                assert_eq!(total_supply, Some(Uint128(0)));
             }
             _ => panic!("unexpected"),
         }
@@ -2635,19 +2544,12 @@ mod tests {
             .as_bytes(),
         ))
         .unwrap();
-
-        let init_supply = Uint128(5000);
-
         let mut deps = mock_dependencies(20, &[]);
         let env = mock_env("instantiator", &[]);
         let init_msg = InitMsg {
             name: init_name.clone(),
             symbol: init_symbol.clone(),
             decimals: init_decimals.clone(),
-            initial_balances: Some(vec![InitialBalance {
-                address: HumanAddr("giannis".to_string()),
-                amount: init_supply,
-            }]),
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             config: Some(init_config),
         };
@@ -2686,10 +2588,7 @@ mod tests {
 
     #[test]
     fn test_query_allowance() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("giannis".to_string()),
-            amount: Uint128(5000),
-        }]);
+        let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
@@ -2795,15 +2694,21 @@ mod tests {
 
     #[test]
     fn test_query_balance() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
+        let (init_result, mut deps) = init_helper_with_config(true, true, true, true, 0);
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
+
+        // Mint
+        let handle_msg = HandleMsg::Mint {
+            recipient: HumanAddr("bob".to_string()),
+            amount: Uint128(5000),
+            memo: None,
+            padding: None,
+        };
+        handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg).unwrap();
 
         let handle_msg = HandleMsg::SetViewingKey {
             key: "key".to_string(),
@@ -2842,15 +2747,21 @@ mod tests {
 
     #[test]
     fn test_query_transfer_history() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
+        let (init_result, mut deps) = init_helper_with_config(true, true, true, true, 0);
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
+
+        // Mint
+        let handle_msg = HandleMsg::Mint {
+            recipient: HumanAddr("bob".to_string()),
+            amount: Uint128(5000),
+            memo: None,
+            padding: None,
+        };
+        handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg).unwrap();
 
         let handle_msg = HandleMsg::SetViewingKey {
             key: "key".to_string(),
@@ -2944,22 +2855,20 @@ mod tests {
 
     #[test]
     fn test_query_transaction_history() {
-        let (init_result, mut deps) = init_helper_with_config(
-            vec![InitialBalance {
-                address: HumanAddr("bob".to_string()),
-                amount: Uint128(10000),
-            }],
-            true,
-            true,
-            true,
-            true,
-            1000,
-        );
+        let (init_result, mut deps) = init_helper_with_config(true, true, true, true, 1000);
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
         );
+        // Mint
+        let handle_msg = HandleMsg::Mint {
+            recipient: HumanAddr("bob".to_string()),
+            amount: Uint128(10000),
+            memo: None,
+            padding: None,
+        };
+        handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg).unwrap();
 
         let handle_msg = HandleMsg::SetViewingKey {
             key: "key".to_string(),
@@ -3130,7 +3039,7 @@ mod tests {
                     amount: Uint128(10000),
                 },
 
-                memo: Some("Initial Balance".to_string()),
+                memo: None,
                 block_time: 1571797419,
                 block_height: 12345,
             },
