@@ -79,16 +79,6 @@ impl InitConfig {
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum HandleMsg {
-    // Native coin interactions
-    Redeem {
-        amount: Uint128,
-        denom: Option<String>,
-        padding: Option<String>,
-    },
-    Deposit {
-        padding: Option<String>,
-    },
-
     // Base ERC-20 stuff
     Transfer {
         recipient: HumanAddr,
@@ -192,14 +182,6 @@ pub enum HandleMsg {
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum HandleAnswer {
-    // Native
-    Deposit {
-        status: ResponseStatus,
-    },
-    Redeem {
-        status: ResponseStatus,
-    },
-
     // Base
     Transfer {
         status: ResponseStatus,
