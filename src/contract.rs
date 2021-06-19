@@ -1,9 +1,9 @@
 /// This contract implements SNIP-20 standard:
 /// https://github.com/SecretFoundation/SNIPs/blob/master/SNIP-20.md
 use cosmwasm_std::{
-    log, to_binary, Api, BankMsg, Binary, CanonicalAddr, Coin, CosmosMsg, Env, Extern,
-    HandleResponse, HumanAddr, InitResponse, Querier, QueryResult, ReadonlyStorage, StdError,
-    StdResult, Storage, Uint128,
+    log, to_binary, Api, Binary, CanonicalAddr, Coin, CosmosMsg, Env, Extern, HandleResponse,
+    HumanAddr, InitResponse, Querier, QueryResult, ReadonlyStorage, StdError, StdResult, Storage,
+    Uint128,
 };
 
 use crate::batch;
@@ -17,9 +17,7 @@ use crate::state::{
     get_receiver_hash, read_allowance, read_viewing_key, set_receiver_hash, write_allowance,
     write_viewing_key, Balances, Config, Constants, ReadonlyBalances, ReadonlyConfig,
 };
-use crate::transaction_history::{
-    get_transfers, get_txs, store_burn, store_deposit, store_mint, store_redeem, store_transfer,
-};
+use crate::transaction_history::{get_transfers, get_txs, store_burn, store_mint, store_transfer};
 use crate::viewing_key::{ViewingKey, VIEWING_KEY_SIZE};
 
 /// We make sure that responses from `handle` are padded to a multiple of this size.
@@ -46,8 +44,8 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
     }
 
     let init_config = msg.config();
-    let admin = msg.admin.unwrap_or(env.message.sender);
-    let canon_admin = deps.api.canonical_address(&admin)?;
+    let contract_initializer = env.message.sender;
+    let canon_contract_initializer = deps.api.canonical_address(&contract_initializer)?;
 
     let mut total_supply: u128 = 0;
     {
@@ -66,7 +64,7 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
             }
             store_mint(
                 &mut deps.storage,
-                &canon_admin,
+                &canon_contract_initializer,
                 &balance_address,
                 balance.amount,
                 msg.symbol.clone(),
@@ -83,7 +81,6 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
         name: msg.name,
         symbol: msg.symbol,
         decimals: msg.decimals,
-        admin: admin.clone(),
         prng_seed: prng_seed_hashed.to_vec(),
         total_supply_is_public: init_config.public_total_supply(),
         deposit_is_enabled: init_config.deposit_enabled(),
@@ -94,7 +91,7 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
     config.set_total_supply(total_supply);
     config.set_contract_status(ContractStatusLevel::NormalRun);
     let minters = if init_config.mint_enabled() {
-        Vec::from([admin])
+        Vec::from([contract_initializer])
     } else {
         Vec::new()
     };
@@ -118,31 +115,7 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
     env: Env,
     msg: HandleMsg,
 ) -> StdResult<HandleResponse> {
-    let contract_status = ReadonlyConfig::from_storage(&deps.storage).contract_status();
-
-    match contract_status {
-        ContractStatusLevel::StopAll | ContractStatusLevel::StopAllButRedeems => {
-            let response = match msg {
-                HandleMsg::SetContractStatus { level, .. } => set_contract_status(deps, env, level),
-                HandleMsg::Redeem { amount, .. }
-                    if contract_status == ContractStatusLevel::StopAllButRedeems =>
-                {
-                    try_redeem(deps, env, amount)
-                }
-                _ => Err(StdError::generic_err(
-                    "This contract is stopped and this action is not allowed",
-                )),
-            };
-            return pad_response(response);
-        }
-        ContractStatusLevel::NormalRun => {} // If it's a normal run just continue
-    }
-
     let response = match msg {
-        // Native
-        HandleMsg::Deposit { .. } => try_deposit(deps, env),
-        HandleMsg::Redeem { amount, .. } => try_redeem(deps, env, amount),
-
         // Base
         HandleMsg::Transfer {
             recipient,
@@ -212,13 +185,6 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
             ..
         } => try_mint(deps, env, recipient, amount, memo),
         HandleMsg::BatchMint { actions, .. } => try_batch_mint(deps, env, actions),
-
-        // Other
-        HandleMsg::ChangeAdmin { address, .. } => change_admin(deps, env, address),
-        HandleMsg::SetContractStatus { level, .. } => set_contract_status(deps, env, level),
-        HandleMsg::AddMinters { minters, .. } => add_minters(deps, env, minters),
-        HandleMsg::RemoveMinters { minters, .. } => remove_minters(deps, env, minters),
-        HandleMsg::SetMinters { minters, .. } => set_minters(deps, env, minters),
     };
 
     pad_response(response)
@@ -229,7 +195,6 @@ pub fn query<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>, msg: QueryM
         QueryMsg::TokenInfo {} => query_token_info(&deps.storage),
         QueryMsg::TokenConfig {} => query_token_config(&deps.storage),
         QueryMsg::ContractStatus {} => query_contract_status(&deps.storage),
-        QueryMsg::ExchangeRate {} => query_exchange_rate(&deps.storage),
         QueryMsg::Minters { .. } => query_minters(deps),
         _ => authenticated_queries(deps, msg),
     }
@@ -275,30 +240,6 @@ pub fn authenticated_queries<S: Storage, A: Api, Q: Querier>(
     Ok(to_binary(&QueryAnswer::ViewingKeyError {
         msg: "Wrong viewing key for this address or viewing key not set".to_string(),
     })?)
-}
-
-fn query_exchange_rate<S: ReadonlyStorage>(storage: &S) -> QueryResult {
-    let config = ReadonlyConfig::from_storage(storage);
-    let constants = config.constants()?;
-
-    if constants.deposit_is_enabled || constants.redeem_is_enabled {
-        let rate: Uint128;
-        let denom: String;
-        // if token has more decimals than SCRT, you get magnitudes of SCRT per token
-        if constants.decimals >= 6 {
-            rate = Uint128(10u128.pow(constants.decimals as u32 - 6));
-            denom = "SCRT".to_string();
-        // if token has less decimals, you get magnitudes token for SCRT
-        } else {
-            rate = Uint128(10u128.pow(6 - constants.decimals as u32));
-            denom = constants.symbol;
-        }
-        return to_binary(&QueryAnswer::ExchangeRate { rate, denom });
-    }
-    to_binary(&QueryAnswer::ExchangeRate {
-        rate: Uint128(0),
-        denom: String::new(),
-    })
 }
 
 fn query_token_info<S: ReadonlyStorage>(storage: &S) -> QueryResult {
@@ -388,26 +329,6 @@ fn query_minters<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>) -> StdR
 
     let response = QueryAnswer::Minters { minters };
     to_binary(&response)
-}
-
-fn change_admin<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
-    env: Env,
-    address: HumanAddr,
-) -> StdResult<HandleResponse> {
-    let mut config = Config::from_storage(&mut deps.storage);
-
-    check_if_admin(&config, &env.message.sender)?;
-
-    let mut consts = config.constants()?;
-    consts.admin = address;
-    config.set_constants(&consts)?;
-
-    Ok(HandleResponse {
-        messages: vec![],
-        log: vec![],
-        data: Some(to_binary(&HandleAnswer::ChangeAdmin { status: Success })?),
-    })
 }
 
 fn try_mint_impl<S: Storage>(
@@ -591,26 +512,6 @@ pub fn try_create_key<S: Storage, A: Api, Q: Querier>(
     })
 }
 
-fn set_contract_status<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
-    env: Env,
-    status_level: ContractStatusLevel,
-) -> StdResult<HandleResponse> {
-    let mut config = Config::from_storage(&mut deps.storage);
-
-    check_if_admin(&config, &env.message.sender)?;
-
-    config.set_contract_status(status_level);
-
-    Ok(HandleResponse {
-        messages: vec![],
-        log: vec![],
-        data: Some(to_binary(&HandleAnswer::SetContractStatus {
-            status: Success,
-        })?),
-    })
-}
-
 pub fn query_allowance<S: Storage, A: Api, Q: Querier>(
     deps: &Extern<S, A, Q>,
     owner: HumanAddr,
@@ -628,147 +529,6 @@ pub fn query_allowance<S: Storage, A: Api, Q: Querier>(
         expiration: allowance.expiration,
     };
     to_binary(&response)
-}
-
-fn try_deposit<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
-    env: Env,
-) -> StdResult<HandleResponse> {
-    let mut amount = Uint128::zero();
-
-    for coin in &env.message.sent_funds {
-        if coin.denom == "uscrt" {
-            amount = coin.amount
-        } else {
-            return Err(StdError::generic_err(
-                "Tried to deposit an unsupported token",
-            ));
-        }
-    }
-
-    if amount.is_zero() {
-        return Err(StdError::generic_err("No funds were sent to be deposited"));
-    }
-
-    let raw_amount = amount.u128();
-
-    let mut config = Config::from_storage(&mut deps.storage);
-    let constants = config.constants()?;
-    if !constants.deposit_is_enabled {
-        return Err(StdError::generic_err(
-            "Deposit functionality is not enabled for this token.",
-        ));
-    }
-    let total_supply = config.total_supply();
-    if let Some(total_supply) = total_supply.checked_add(raw_amount) {
-        config.set_total_supply(total_supply);
-    } else {
-        return Err(StdError::generic_err(
-            "This deposit would overflow the currency's total supply",
-        ));
-    }
-
-    let sender_address = deps.api.canonical_address(&env.message.sender)?;
-
-    let mut balances = Balances::from_storage(&mut deps.storage);
-    let account_balance = balances.balance(&sender_address);
-    if let Some(account_balance) = account_balance.checked_add(raw_amount) {
-        balances.set_account_balance(&sender_address, account_balance);
-    } else {
-        return Err(StdError::generic_err(
-            "This deposit would overflow your balance",
-        ));
-    }
-
-    store_deposit(
-        &mut deps.storage,
-        &sender_address,
-        amount,
-        "uscrt".to_string(),
-        &env.block,
-    )?;
-
-    let res = HandleResponse {
-        messages: vec![],
-        log: vec![],
-        data: Some(to_binary(&HandleAnswer::Deposit { status: Success })?),
-    };
-
-    Ok(res)
-}
-
-fn try_redeem<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
-    env: Env,
-    amount: Uint128,
-) -> StdResult<HandleResponse> {
-    let config = ReadonlyConfig::from_storage(&deps.storage);
-    let constants = config.constants()?;
-    if !constants.redeem_is_enabled {
-        return Err(StdError::generic_err(
-            "Redeem functionality is not enabled for this token.",
-        ));
-    }
-
-    let sender_address = deps.api.canonical_address(&env.message.sender)?;
-    let amount_raw = amount.u128();
-
-    let mut balances = Balances::from_storage(&mut deps.storage);
-    let account_balance = balances.balance(&sender_address);
-
-    if let Some(account_balance) = account_balance.checked_sub(amount_raw) {
-        balances.set_account_balance(&sender_address, account_balance);
-    } else {
-        return Err(StdError::generic_err(format!(
-            "insufficient funds to redeem: balance={}, required={}",
-            account_balance, amount_raw
-        )));
-    }
-
-    let mut config = Config::from_storage(&mut deps.storage);
-    let total_supply = config.total_supply();
-    if let Some(total_supply) = total_supply.checked_sub(amount_raw) {
-        config.set_total_supply(total_supply);
-    } else {
-        return Err(StdError::generic_err(
-            "You are trying to redeem more tokens than what is available in the total supply",
-        ));
-    }
-
-    let token_reserve = deps
-        .querier
-        .query_balance(&env.contract.address, "uscrt")?
-        .amount;
-    if amount > token_reserve {
-        return Err(StdError::generic_err(
-            "You are trying to redeem for more SCRT than the token has in its deposit reserve.",
-        ));
-    }
-
-    let withdrawal_coins: Vec<Coin> = vec![Coin {
-        denom: "uscrt".to_string(),
-        amount,
-    }];
-
-    store_redeem(
-        &mut deps.storage,
-        &sender_address,
-        amount,
-        constants.symbol,
-        &env.block,
-    )?;
-
-    let res = HandleResponse {
-        messages: vec![CosmosMsg::Bank(BankMsg::Send {
-            from_address: env.contract.address,
-            to_address: env.message.sender,
-            amount: withdrawal_coins,
-        })],
-        log: vec![],
-        data: Some(to_binary(&HandleAnswer::Redeem { status: Success })?),
-    };
-
-    Ok(res)
 }
 
 fn try_transfer_impl<S: Storage, A: Api, Q: Querier>(
@@ -1415,78 +1175,6 @@ fn try_decrease_allowance<S: Storage, A: Api, Q: Querier>(
     Ok(res)
 }
 
-fn add_minters<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
-    env: Env,
-    minters_to_add: Vec<HumanAddr>,
-) -> StdResult<HandleResponse> {
-    let mut config = Config::from_storage(&mut deps.storage);
-    let constants = config.constants()?;
-    if !constants.mint_is_enabled {
-        return Err(StdError::generic_err(
-            "Mint functionality is not enabled for this token.",
-        ));
-    }
-
-    check_if_admin(&config, &env.message.sender)?;
-
-    config.add_minters(minters_to_add)?;
-
-    Ok(HandleResponse {
-        messages: vec![],
-        log: vec![],
-        data: Some(to_binary(&HandleAnswer::AddMinters { status: Success })?),
-    })
-}
-
-fn remove_minters<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
-    env: Env,
-    minters_to_remove: Vec<HumanAddr>,
-) -> StdResult<HandleResponse> {
-    let mut config = Config::from_storage(&mut deps.storage);
-    let constants = config.constants()?;
-    if !constants.mint_is_enabled {
-        return Err(StdError::generic_err(
-            "Mint functionality is not enabled for this token.",
-        ));
-    }
-
-    check_if_admin(&config, &env.message.sender)?;
-
-    config.remove_minters(minters_to_remove)?;
-
-    Ok(HandleResponse {
-        messages: vec![],
-        log: vec![],
-        data: Some(to_binary(&HandleAnswer::RemoveMinters { status: Success })?),
-    })
-}
-
-fn set_minters<S: Storage, A: Api, Q: Querier>(
-    deps: &mut Extern<S, A, Q>,
-    env: Env,
-    minters_to_set: Vec<HumanAddr>,
-) -> StdResult<HandleResponse> {
-    let mut config = Config::from_storage(&mut deps.storage);
-    let constants = config.constants()?;
-    if !constants.mint_is_enabled {
-        return Err(StdError::generic_err(
-            "Mint functionality is not enabled for this token.",
-        ));
-    }
-
-    check_if_admin(&config, &env.message.sender)?;
-
-    config.set_minters(minters_to_set)?;
-
-    Ok(HandleResponse {
-        messages: vec![],
-        log: vec![],
-        data: Some(to_binary(&HandleAnswer::SetMinters { status: Success })?),
-    })
-}
-
 /// Burn tokens
 ///
 /// Remove `amount` tokens from the system irreversibly, from signer account
@@ -1581,25 +1269,6 @@ fn perform_transfer<T: Storage>(
     Ok(())
 }
 
-fn is_admin<S: Storage>(config: &Config<S>, account: &HumanAddr) -> StdResult<bool> {
-    let consts = config.constants()?;
-    if &consts.admin != account {
-        return Ok(false);
-    }
-
-    Ok(true)
-}
-
-fn check_if_admin<S: Storage>(config: &Config<S>, account: &HumanAddr) -> StdResult<()> {
-    if !is_admin(config, account)? {
-        return Err(StdError::generic_err(
-            "This is an admin command. Admin commands can only be run from admin address",
-        ));
-    }
-
-    Ok(())
-}
-
 fn is_valid_name(name: &str) -> bool {
     let len = name.len();
     (3..=30).contains(&len)
@@ -1638,11 +1307,10 @@ mod tests {
         Extern<MockStorage, MockApi, MockQuerier>,
     ) {
         let mut deps = mock_dependencies(20, &[]);
-        let env = mock_env("instantiator", &[]);
+        let env = mock_env("contract_initializer", &[]);
 
         let init_msg = InitMsg {
             name: "sec-sec".to_string(),
-            admin: Some(HumanAddr("admin".to_string())),
             symbol: "SECSEC".to_string(),
             decimals: 8,
             initial_balances: Some(initial_balances),
@@ -1672,7 +1340,7 @@ mod tests {
             }],
         );
 
-        let env = mock_env("instantiator", &[]);
+        let env = mock_env("contract_initializer", &[]);
         let init_config: InitConfig = from_binary(&Binary::from(
             format!(
                 "{{\"public_total_supply\":false,
@@ -1687,7 +1355,6 @@ mod tests {
         .unwrap();
         let init_msg = InitMsg {
             name: "sec-sec".to_string(),
-            admin: Some(HumanAddr("admin".to_string())),
             symbol: "SECSEC".to_string(),
             decimals: 8,
             initial_balances: Some(initial_balances),
@@ -1745,9 +1412,7 @@ mod tests {
         let handle_result: HandleAnswer = from_binary(&handle_result.data.unwrap()).unwrap();
 
         match handle_result {
-            HandleAnswer::Deposit { status }
-            | HandleAnswer::Redeem { status }
-            | HandleAnswer::Transfer { status }
+            HandleAnswer::Transfer { status }
             | HandleAnswer::Send { status }
             | HandleAnswer::Burn { status }
             | HandleAnswer::RegisterReceive { status }
@@ -1755,12 +1420,7 @@ mod tests {
             | HandleAnswer::TransferFrom { status }
             | HandleAnswer::SendFrom { status }
             | HandleAnswer::BurnFrom { status }
-            | HandleAnswer::Mint { status }
-            | HandleAnswer::ChangeAdmin { status }
-            | HandleAnswer::SetContractStatus { status }
-            | HandleAnswer::SetMinters { status }
-            | HandleAnswer::AddMinters { status }
-            | HandleAnswer::RemoveMinters { status } => {
+            | HandleAnswer::Mint { status } => {
                 matches!(status, ResponseStatus::Success { .. })
             }
             _ => panic!(
@@ -1785,7 +1445,6 @@ mod tests {
         assert_eq!(config.total_supply(), 5000);
         assert_eq!(config.contract_status(), ContractStatusLevel::NormalRun);
         assert_eq!(constants.name, "sec-sec".to_string());
-        assert_eq!(constants.admin, HumanAddr("admin".to_string()));
         assert_eq!(constants.symbol, "SECSEC".to_string());
         assert_eq!(constants.decimals, 8);
         assert_eq!(
@@ -1815,7 +1474,6 @@ mod tests {
         assert_eq!(config.total_supply(), 5000);
         assert_eq!(config.contract_status(), ContractStatusLevel::NormalRun);
         assert_eq!(constants.name, "sec-sec".to_string());
-        assert_eq!(constants.admin, HumanAddr("admin".to_string()));
         assert_eq!(constants.symbol, "SECSEC".to_string());
         assert_eq!(constants.decimals, 8);
         assert_eq!(
@@ -2729,223 +2387,6 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_change_admin() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let handle_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("bob".to_string()),
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        assert!(
-            handle_result.is_ok(),
-            "handle() failed: {}",
-            handle_result.err().unwrap()
-        );
-
-        let admin = ReadonlyConfig::from_storage(&deps.storage)
-            .constants()
-            .unwrap()
-            .admin;
-        assert_eq!(admin, HumanAddr("bob".to_string()));
-    }
-
-    #[test]
-    fn test_handle_set_contract_status() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("admin".to_string()),
-            amount: Uint128(5000),
-        }]);
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let handle_msg = HandleMsg::SetContractStatus {
-            level: ContractStatusLevel::StopAll,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        assert!(
-            handle_result.is_ok(),
-            "handle() failed: {}",
-            handle_result.err().unwrap()
-        );
-
-        let contract_status = ReadonlyConfig::from_storage(&deps.storage).contract_status();
-        assert!(matches!(
-            contract_status,
-            ContractStatusLevel::StopAll { .. }
-        ));
-    }
-
-    #[test]
-    fn test_handle_redeem() {
-        let (init_result, mut deps) = init_helper_with_config(
-            vec![InitialBalance {
-                address: HumanAddr("butler".to_string()),
-                amount: Uint128(5000),
-            }],
-            false,
-            true,
-            false,
-            false,
-            1000,
-        );
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let (init_result_no_reserve, mut deps_no_reserve) = init_helper_with_config(
-            vec![InitialBalance {
-                address: HumanAddr("butler".to_string()),
-                amount: Uint128(5000),
-            }],
-            false,
-            true,
-            false,
-            false,
-            0,
-        );
-        assert!(
-            init_result_no_reserve.is_ok(),
-            "Init failed: {}",
-            init_result_no_reserve.err().unwrap()
-        );
-
-        let (init_result_for_failure, mut deps_for_failure) = init_helper(vec![InitialBalance {
-            address: HumanAddr("butler".to_string()),
-            amount: Uint128(5000),
-        }]);
-        assert!(
-            init_result_for_failure.is_ok(),
-            "Init failed: {}",
-            init_result_for_failure.err().unwrap()
-        );
-        // test when redeem disabled
-        let handle_msg = HandleMsg::Redeem {
-            amount: Uint128(1000),
-            denom: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps_for_failure, mock_env("butler", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("Redeem functionality is not enabled for this token."));
-
-        // try to redeem when contract has 0 balance
-        let handle_msg = HandleMsg::Redeem {
-            amount: Uint128(1000),
-            denom: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps_no_reserve, mock_env("butler", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains(
-            "You are trying to redeem for more SCRT than the token has in its deposit reserve."
-        ));
-
-        let handle_msg = HandleMsg::Redeem {
-            amount: Uint128(1000),
-            denom: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("butler", &[]), handle_msg);
-        assert!(
-            handle_result.is_ok(),
-            "handle() failed: {}",
-            handle_result.err().unwrap()
-        );
-
-        let balances = ReadonlyBalances::from_storage(&deps.storage);
-        let canonical = deps
-            .api
-            .canonical_address(&HumanAddr("butler".to_string()))
-            .unwrap();
-        assert_eq!(balances.account_amount(&canonical), 4000)
-    }
-
-    #[test]
-    fn test_handle_deposit() {
-        let (init_result, mut deps) = init_helper_with_config(
-            vec![InitialBalance {
-                address: HumanAddr("lebron".to_string()),
-                amount: Uint128(5000),
-            }],
-            true,
-            false,
-            false,
-            false,
-            0,
-        );
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let (init_result_for_failure, mut deps_for_failure) = init_helper(vec![InitialBalance {
-            address: HumanAddr("lebron".to_string()),
-            amount: Uint128(5000),
-        }]);
-        assert!(
-            init_result_for_failure.is_ok(),
-            "Init failed: {}",
-            init_result_for_failure.err().unwrap()
-        );
-        // test when deposit disabled
-        let handle_msg = HandleMsg::Deposit { padding: None };
-        let handle_result = handle(
-            &mut deps_for_failure,
-            mock_env(
-                "lebron",
-                &[Coin {
-                    denom: "uscrt".to_string(),
-                    amount: Uint128(1000),
-                }],
-            ),
-            handle_msg,
-        );
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("Deposit functionality is not enabled for this token."));
-
-        let handle_msg = HandleMsg::Deposit { padding: None };
-        let handle_result = handle(
-            &mut deps,
-            mock_env(
-                "lebron",
-                &[Coin {
-                    denom: "uscrt".to_string(),
-                    amount: Uint128(1000),
-                }],
-            ),
-            handle_msg,
-        );
-        assert!(
-            handle_result.is_ok(),
-            "handle() failed: {}",
-            handle_result.err().unwrap()
-        );
-
-        let balances = ReadonlyBalances::from_storage(&deps.storage);
-        let canonical = deps
-            .api
-            .canonical_address(&HumanAddr("lebron".to_string()))
-            .unwrap();
-        assert_eq!(balances.account_amount(&canonical), 6000)
-    }
-
-    #[test]
     fn test_handle_burn() {
         let (init_result, mut deps) = init_helper_with_config(
             vec![InitialBalance {
@@ -3036,7 +2477,11 @@ mod tests {
             memo: None,
             padding: None,
         };
-        let handle_result = handle(&mut deps_for_failure, mock_env("admin", &[]), handle_msg);
+        let handle_result = handle(
+            &mut deps_for_failure,
+            mock_env("contract_initializer", &[]),
+            handle_msg,
+        );
         let error = extract_error_msg(handle_result);
         assert!(error.contains("Mint functionality is not enabled for this token"));
 
@@ -3048,7 +2493,7 @@ mod tests {
             memo: None,
             padding: None,
         };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_result = handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg);
         assert!(
             handle_result.is_ok(),
             "Pause handle failed: {}",
@@ -3057,415 +2502,6 @@ mod tests {
 
         let new_supply = ReadonlyConfig::from_storage(&deps.storage).total_supply();
         assert_eq!(new_supply, supply + mint_amount);
-    }
-
-    #[test]
-    fn test_handle_admin_commands() {
-        let admin_err = "Admin commands can only be run from admin address".to_string();
-        let (init_result, mut deps) = init_helper_with_config(
-            vec![InitialBalance {
-                address: HumanAddr("lebron".to_string()),
-                amount: Uint128(5000),
-            }],
-            false,
-            false,
-            true,
-            false,
-            0,
-        );
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let pause_msg = HandleMsg::SetContractStatus {
-            level: ContractStatusLevel::StopAllButRedeems,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("not_admin", &[]), pause_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains(&admin_err.clone()));
-
-        let mint_msg = HandleMsg::AddMinters {
-            minters: vec![HumanAddr("not_admin".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("not_admin", &[]), mint_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains(&admin_err.clone()));
-
-        let mint_msg = HandleMsg::RemoveMinters {
-            minters: vec![HumanAddr("admin".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("not_admin", &[]), mint_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains(&admin_err.clone()));
-
-        let mint_msg = HandleMsg::SetMinters {
-            minters: vec![HumanAddr("not_admin".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("not_admin", &[]), mint_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains(&admin_err.clone()));
-
-        let change_admin_msg = HandleMsg::ChangeAdmin {
-            address: HumanAddr("not_admin".to_string()),
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("not_admin", &[]), change_admin_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains(&admin_err.clone()));
-    }
-
-    #[test]
-    fn test_handle_pause_with_withdrawals() {
-        let (init_result, mut deps) = init_helper_with_config(
-            vec![InitialBalance {
-                address: HumanAddr("lebron".to_string()),
-                amount: Uint128(5000),
-            }],
-            false,
-            true,
-            false,
-            false,
-            5000,
-        );
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let pause_msg = HandleMsg::SetContractStatus {
-            level: ContractStatusLevel::StopAllButRedeems,
-            padding: None,
-        };
-
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), pause_msg);
-        assert!(
-            handle_result.is_ok(),
-            "Pause handle failed: {}",
-            handle_result.err().unwrap()
-        );
-
-        let send_msg = HandleMsg::Transfer {
-            recipient: HumanAddr("account".to_string()),
-            amount: Uint128(123),
-            memo: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), send_msg);
-        let error = extract_error_msg(handle_result);
-        assert_eq!(
-            error,
-            "This contract is stopped and this action is not allowed".to_string()
-        );
-
-        let withdraw_msg = HandleMsg::Redeem {
-            amount: Uint128(5000),
-            denom: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("lebron", &[]), withdraw_msg);
-        assert!(
-            handle_result.is_ok(),
-            "Withdraw failed: {}",
-            handle_result.err().unwrap()
-        );
-    }
-
-    #[test]
-    fn test_handle_pause_all() {
-        let (init_result, mut deps) = init_helper(vec![InitialBalance {
-            address: HumanAddr("lebron".to_string()),
-            amount: Uint128(5000),
-        }]);
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let pause_msg = HandleMsg::SetContractStatus {
-            level: ContractStatusLevel::StopAll,
-            padding: None,
-        };
-
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), pause_msg);
-        assert!(
-            handle_result.is_ok(),
-            "Pause handle failed: {}",
-            handle_result.err().unwrap()
-        );
-
-        let send_msg = HandleMsg::Transfer {
-            recipient: HumanAddr("account".to_string()),
-            amount: Uint128(123),
-            memo: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), send_msg);
-        let error = extract_error_msg(handle_result);
-        assert_eq!(
-            error,
-            "This contract is stopped and this action is not allowed".to_string()
-        );
-
-        let withdraw_msg = HandleMsg::Redeem {
-            amount: Uint128(5000),
-            denom: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("lebron", &[]), withdraw_msg);
-        let error = extract_error_msg(handle_result);
-        assert_eq!(
-            error,
-            "This contract is stopped and this action is not allowed".to_string()
-        );
-    }
-
-    #[test]
-    fn test_handle_set_minters() {
-        let (init_result, mut deps) = init_helper_with_config(
-            vec![InitialBalance {
-                address: HumanAddr("bob".to_string()),
-                amount: Uint128(5000),
-            }],
-            false,
-            false,
-            true,
-            false,
-            0,
-        );
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-        let (init_result_for_failure, mut deps_for_failure) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
-        assert!(
-            init_result_for_failure.is_ok(),
-            "Init failed: {}",
-            init_result_for_failure.err().unwrap()
-        );
-        // try when mint disabled
-        let handle_msg = HandleMsg::SetMinters {
-            minters: vec![HumanAddr("bob".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps_for_failure, mock_env("admin", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("Mint functionality is not enabled for this token"));
-
-        let handle_msg = HandleMsg::SetMinters {
-            minters: vec![HumanAddr("bob".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("Admin commands can only be run from admin address"));
-
-        let handle_msg = HandleMsg::SetMinters {
-            minters: vec![HumanAddr("bob".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        assert!(ensure_success(handle_result.unwrap()));
-
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(100),
-            memo: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
-        assert!(ensure_success(handle_result.unwrap()));
-
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(100),
-            memo: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("allowed to minter accounts only"));
-    }
-
-    #[test]
-    fn test_handle_add_minters() {
-        let (init_result, mut deps) = init_helper_with_config(
-            vec![InitialBalance {
-                address: HumanAddr("bob".to_string()),
-                amount: Uint128(5000),
-            }],
-            false,
-            false,
-            true,
-            false,
-            0,
-        );
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-        let (init_result_for_failure, mut deps_for_failure) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
-        assert!(
-            init_result_for_failure.is_ok(),
-            "Init failed: {}",
-            init_result_for_failure.err().unwrap()
-        );
-        // try when mint disabled
-        let handle_msg = HandleMsg::AddMinters {
-            minters: vec![HumanAddr("bob".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps_for_failure, mock_env("admin", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("Mint functionality is not enabled for this token"));
-
-        let handle_msg = HandleMsg::AddMinters {
-            minters: vec![HumanAddr("bob".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("Admin commands can only be run from admin address"));
-
-        let handle_msg = HandleMsg::AddMinters {
-            minters: vec![HumanAddr("bob".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        assert!(ensure_success(handle_result.unwrap()));
-
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(100),
-            memo: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
-        assert!(ensure_success(handle_result.unwrap()));
-
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(100),
-            memo: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        assert!(ensure_success(handle_result.unwrap()));
-    }
-
-    #[test]
-    fn test_handle_remove_minters() {
-        let (init_result, mut deps) = init_helper_with_config(
-            vec![InitialBalance {
-                address: HumanAddr("bob".to_string()),
-                amount: Uint128(5000),
-            }],
-            false,
-            false,
-            true,
-            false,
-            0,
-        );
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-        let (init_result_for_failure, mut deps_for_failure) = init_helper(vec![InitialBalance {
-            address: HumanAddr("bob".to_string()),
-            amount: Uint128(5000),
-        }]);
-        assert!(
-            init_result_for_failure.is_ok(),
-            "Init failed: {}",
-            init_result_for_failure.err().unwrap()
-        );
-        // try when mint disabled
-        let handle_msg = HandleMsg::RemoveMinters {
-            minters: vec![HumanAddr("bob".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps_for_failure, mock_env("admin", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("Mint functionality is not enabled for this token"));
-
-        let handle_msg = HandleMsg::RemoveMinters {
-            minters: vec![HumanAddr("admin".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("Admin commands can only be run from admin address"));
-
-        let handle_msg = HandleMsg::RemoveMinters {
-            minters: vec![HumanAddr("admin".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        assert!(ensure_success(handle_result.unwrap()));
-
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(100),
-            memo: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("allowed to minter accounts only"));
-
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(100),
-            memo: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("allowed to minter accounts only"));
-
-        // Removing another extra time to ensure nothing funky happens
-        let handle_msg = HandleMsg::RemoveMinters {
-            minters: vec![HumanAddr("admin".to_string())],
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        assert!(ensure_success(handle_result.unwrap()));
-
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(100),
-            memo: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("allowed to minter accounts only"));
-
-        let handle_msg = HandleMsg::Mint {
-            recipient: HumanAddr("bob".to_string()),
-            amount: Uint128(100),
-            memo: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("allowed to minter accounts only"));
     }
 
     // Query tests
@@ -3530,7 +2566,6 @@ mod tests {
     #[test]
     fn test_query_token_info() {
         let init_name = "sec-sec".to_string();
-        let init_admin = HumanAddr("admin".to_string());
         let init_symbol = "SECSEC".to_string();
         let init_decimals = 8;
         let init_config: InitConfig = from_binary(&Binary::from(
@@ -3543,7 +2578,6 @@ mod tests {
         let env = mock_env("instantiator", &[]);
         let init_msg = InitMsg {
             name: init_name.clone(),
-            admin: Some(init_admin.clone()),
             symbol: init_symbol.clone(),
             decimals: init_decimals.clone(),
             initial_balances: Some(vec![InitialBalance {
@@ -3587,7 +2621,6 @@ mod tests {
     #[test]
     fn test_query_token_config() {
         let init_name = "sec-sec".to_string();
-        let init_admin = HumanAddr("admin".to_string());
         let init_symbol = "SECSEC".to_string();
         let init_decimals = 8;
         let init_config: InitConfig = from_binary(&Binary::from(
@@ -3609,7 +2642,6 @@ mod tests {
         let env = mock_env("instantiator", &[]);
         let init_msg = InitMsg {
             name: init_name.clone(),
-            admin: Some(init_admin.clone()),
             symbol: init_symbol.clone(),
             decimals: init_decimals.clone(),
             initial_balances: Some(vec![InitialBalance {
@@ -3647,225 +2679,6 @@ mod tests {
                 assert_eq!(redeem_enabled, false);
                 assert_eq!(mint_enabled, true);
                 assert_eq!(burn_enabled, false);
-            }
-            _ => panic!("unexpected"),
-        }
-    }
-
-    #[test]
-    fn test_query_exchange_rate() {
-        // test more dec than SCRT
-        let init_name = "sec-sec".to_string();
-        let init_admin = HumanAddr("admin".to_string());
-        let init_symbol = "SECSEC".to_string();
-        let init_decimals = 8;
-
-        let init_supply = Uint128(5000);
-
-        let mut deps = mock_dependencies(20, &[]);
-        let env = mock_env("instantiator", &[]);
-        let init_config: InitConfig = from_binary(&Binary::from(
-            format!(
-                "{{\"public_total_supply\":{},
-            \"enable_deposit\":{},
-            \"enable_redeem\":{},
-            \"enable_mint\":{},
-            \"enable_burn\":{}}}",
-                true, true, false, false, false
-            )
-            .as_bytes(),
-        ))
-        .unwrap();
-        let init_msg = InitMsg {
-            name: init_name.clone(),
-            admin: Some(init_admin.clone()),
-            symbol: init_symbol.clone(),
-            decimals: init_decimals.clone(),
-            initial_balances: Some(vec![InitialBalance {
-                address: HumanAddr("giannis".to_string()),
-                amount: init_supply,
-            }]),
-            prng_seed: Binary::from("lolz fun yay".as_bytes()),
-            config: Some(init_config),
-        };
-        let init_result = init(&mut deps, env, init_msg);
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let query_msg = QueryMsg::ExchangeRate {};
-        let query_result = query(&deps, query_msg);
-        assert!(
-            query_result.is_ok(),
-            "Init failed: {}",
-            query_result.err().unwrap()
-        );
-        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
-        match query_answer {
-            QueryAnswer::ExchangeRate { rate, denom } => {
-                assert_eq!(rate, Uint128(100));
-                assert_eq!(denom, "SCRT");
-            }
-            _ => panic!("unexpected"),
-        }
-
-        // test same number of decimals as SCRT
-        let init_name = "sec-sec".to_string();
-        let init_admin = HumanAddr("admin".to_string());
-        let init_symbol = "SECSEC".to_string();
-        let init_decimals = 6;
-
-        let init_supply = Uint128(5000);
-
-        let mut deps = mock_dependencies(20, &[]);
-        let env = mock_env("instantiator", &[]);
-        let init_config: InitConfig = from_binary(&Binary::from(
-            format!(
-                "{{\"public_total_supply\":{},
-            \"enable_deposit\":{},
-            \"enable_redeem\":{},
-            \"enable_mint\":{},
-            \"enable_burn\":{}}}",
-                true, true, false, false, false
-            )
-            .as_bytes(),
-        ))
-        .unwrap();
-        let init_msg = InitMsg {
-            name: init_name.clone(),
-            admin: Some(init_admin.clone()),
-            symbol: init_symbol.clone(),
-            decimals: init_decimals.clone(),
-            initial_balances: Some(vec![InitialBalance {
-                address: HumanAddr("giannis".to_string()),
-                amount: init_supply,
-            }]),
-            prng_seed: Binary::from("lolz fun yay".as_bytes()),
-            config: Some(init_config),
-        };
-        let init_result = init(&mut deps, env, init_msg);
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let query_msg = QueryMsg::ExchangeRate {};
-        let query_result = query(&deps, query_msg);
-        assert!(
-            query_result.is_ok(),
-            "Init failed: {}",
-            query_result.err().unwrap()
-        );
-        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
-        match query_answer {
-            QueryAnswer::ExchangeRate { rate, denom } => {
-                assert_eq!(rate, Uint128(1));
-                assert_eq!(denom, "SCRT");
-            }
-            _ => panic!("unexpected"),
-        }
-
-        // test less decimal places than SCRT
-        let init_name = "sec-sec".to_string();
-        let init_admin = HumanAddr("admin".to_string());
-        let init_symbol = "SECSEC".to_string();
-        let init_decimals = 3;
-
-        let init_supply = Uint128(5000);
-
-        let mut deps = mock_dependencies(20, &[]);
-        let env = mock_env("instantiator", &[]);
-        let init_config: InitConfig = from_binary(&Binary::from(
-            format!(
-                "{{\"public_total_supply\":{},
-            \"enable_deposit\":{},
-            \"enable_redeem\":{},
-            \"enable_mint\":{},
-            \"enable_burn\":{}}}",
-                true, true, false, false, false
-            )
-            .as_bytes(),
-        ))
-        .unwrap();
-        let init_msg = InitMsg {
-            name: init_name.clone(),
-            admin: Some(init_admin.clone()),
-            symbol: init_symbol.clone(),
-            decimals: init_decimals.clone(),
-            initial_balances: Some(vec![InitialBalance {
-                address: HumanAddr("giannis".to_string()),
-                amount: init_supply,
-            }]),
-            prng_seed: Binary::from("lolz fun yay".as_bytes()),
-            config: Some(init_config),
-        };
-        let init_result = init(&mut deps, env, init_msg);
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let query_msg = QueryMsg::ExchangeRate {};
-        let query_result = query(&deps, query_msg);
-        assert!(
-            query_result.is_ok(),
-            "Init failed: {}",
-            query_result.err().unwrap()
-        );
-        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
-        match query_answer {
-            QueryAnswer::ExchangeRate { rate, denom } => {
-                assert_eq!(rate, Uint128(1000));
-                assert_eq!(denom, "SECSEC");
-            }
-            _ => panic!("unexpected"),
-        }
-
-        // test depost/redeem not enabled
-        let init_name = "sec-sec".to_string();
-        let init_admin = HumanAddr("admin".to_string());
-        let init_symbol = "SECSEC".to_string();
-        let init_decimals = 3;
-
-        let init_supply = Uint128(5000);
-
-        let mut deps = mock_dependencies(20, &[]);
-        let env = mock_env("instantiator", &[]);
-        let init_msg = InitMsg {
-            name: init_name.clone(),
-            admin: Some(init_admin.clone()),
-            symbol: init_symbol.clone(),
-            decimals: init_decimals.clone(),
-            initial_balances: Some(vec![InitialBalance {
-                address: HumanAddr("giannis".to_string()),
-                amount: init_supply,
-            }]),
-            prng_seed: Binary::from("lolz fun yay".as_bytes()),
-            config: None,
-        };
-        let init_result = init(&mut deps, env, init_msg);
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let query_msg = QueryMsg::ExchangeRate {};
-        let query_result = query(&deps, query_msg);
-        assert!(
-            query_result.is_ok(),
-            "Init failed: {}",
-            query_result.err().unwrap()
-        );
-        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
-        match query_answer {
-            QueryAnswer::ExchangeRate { rate, denom } => {
-                assert_eq!(rate, Uint128(0));
-                assert_eq!(denom, String::new());
             }
             _ => panic!("unexpected"),
         }
@@ -4167,44 +2980,14 @@ mod tests {
             handle_result.err().unwrap()
         );
 
-        let handle_msg = HandleMsg::Redeem {
-            amount: Uint128(1000),
-            denom: None,
-            padding: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bob", &[]), handle_msg);
-        assert!(
-            handle_result.is_ok(),
-            "handle() failed: {}",
-            handle_result.err().unwrap()
-        );
-
         let handle_msg = HandleMsg::Mint {
             recipient: HumanAddr("bob".to_string()),
             amount: Uint128(100),
             memo: Some("my mint message".to_string()),
             padding: None,
         };
-        let handle_result = handle(&mut deps, mock_env("admin", &[]), handle_msg);
+        let handle_result = handle(&mut deps, mock_env("contract_initializer", &[]), handle_msg);
         assert!(ensure_success(handle_result.unwrap()));
-
-        let handle_msg = HandleMsg::Deposit { padding: None };
-        let handle_result = handle(
-            &mut deps,
-            mock_env(
-                "bob",
-                &[Coin {
-                    denom: "uscrt".to_string(),
-                    amount: Uint128(1000),
-                }],
-            ),
-            handle_msg,
-        );
-        assert!(
-            handle_result.is_ok(),
-            "handle() failed: {}",
-            handle_result.err().unwrap()
-        );
 
         let handle_msg = HandleMsg::Transfer {
             recipient: HumanAddr("alice".to_string()),
@@ -4264,7 +3047,7 @@ mod tests {
         use crate::transaction_history::{RichTx, TxAction};
         let expected_transfers = [
             RichTx {
-                id: 8,
+                id: 6,
                 action: TxAction::Transfer {
                     from: HumanAddr("bob".to_string()),
                     sender: HumanAddr("bob".to_string()),
@@ -4279,7 +3062,7 @@ mod tests {
                 block_height: 12345,
             },
             RichTx {
-                id: 7,
+                id: 5,
                 action: TxAction::Transfer {
                     from: HumanAddr("bob".to_string()),
                     sender: HumanAddr("bob".to_string()),
@@ -4294,7 +3077,7 @@ mod tests {
                 block_height: 12345,
             },
             RichTx {
-                id: 6,
+                id: 4,
                 action: TxAction::Transfer {
                     from: HumanAddr("bob".to_string()),
                     sender: HumanAddr("bob".to_string()),
@@ -4309,20 +3092,9 @@ mod tests {
                 block_height: 12345,
             },
             RichTx {
-                id: 5,
-                action: TxAction::Deposit {},
-                coins: Coin {
-                    denom: "uscrt".to_string(),
-                    amount: Uint128(1000),
-                },
-                memo: None,
-                block_time: 1571797419,
-                block_height: 12345,
-            },
-            RichTx {
-                id: 4,
+                id: 3,
                 action: TxAction::Mint {
-                    minter: HumanAddr("admin".to_string()),
+                    minter: HumanAddr("contract_initializer".to_string()),
                     recipient: HumanAddr("bob".to_string()),
                 },
                 coins: Coin {
@@ -4330,17 +3102,6 @@ mod tests {
                     amount: Uint128(100),
                 },
                 memo: Some("my mint message".to_string()),
-                block_time: 1571797419,
-                block_height: 12345,
-            },
-            RichTx {
-                id: 3,
-                action: TxAction::Redeem {},
-                coins: Coin {
-                    denom: "SECSEC".to_string(),
-                    amount: Uint128(1000),
-                },
-                memo: None,
                 block_time: 1571797419,
                 block_height: 12345,
             },
@@ -4361,7 +3122,7 @@ mod tests {
             RichTx {
                 id: 1,
                 action: TxAction::Mint {
-                    minter: HumanAddr("admin".to_string()),
+                    minter: HumanAddr("contract_initializer".to_string()),
                     recipient: HumanAddr("bob".to_string()),
                 },
                 coins: Coin {
