@@ -293,9 +293,7 @@
     "ContractStatusLevel": {
       "type": "string",
       "enum": [
-        "normal_run",
-        "stop_all_but_redeems",
-        "stop_all"
+        "normal_run"
       ]
     },
     "HumanAddr": {

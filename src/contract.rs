@@ -58,7 +58,6 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
         burn_is_enabled: init_config.burn_enabled(),
     })?;
     config.set_total_supply(0);
-    config.set_contract_status(ContractStatusLevel::NormalRun);
     let minters = if init_config.mint_enabled() {
         Vec::from([contract_initializer])
     } else {
@@ -163,7 +162,7 @@ pub fn query<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>, msg: QueryM
     match msg {
         QueryMsg::TokenInfo {} => query_token_info(&deps.storage),
         QueryMsg::TokenConfig {} => query_token_config(&deps.storage),
-        QueryMsg::ContractStatus {} => query_contract_status(&deps.storage),
+        QueryMsg::ContractStatus {} => query_contract_status(),
         QueryMsg::ExchangeRate {} => query_exchange_rate(),
         QueryMsg::Minters { .. } => query_minters(deps),
         _ => authenticated_queries(deps, msg),
@@ -250,11 +249,9 @@ fn query_token_config<S: ReadonlyStorage>(storage: &S) -> QueryResult {
     })
 }
 
-fn query_contract_status<S: ReadonlyStorage>(storage: &S) -> QueryResult {
-    let config = ReadonlyConfig::from_storage(storage);
-
+fn query_contract_status() -> QueryResult {
     to_binary(&QueryAnswer::ContractStatus {
-        status: config.contract_status(),
+        status: ContractStatusLevel::NormalRun,
     })
 }
 
@@ -1402,7 +1399,6 @@ mod tests {
         let config = ReadonlyConfig::from_storage(&deps.storage);
         let constants = config.constants().unwrap();
         assert_eq!(config.total_supply(), 5000);
-        assert_eq!(config.contract_status(), ContractStatusLevel::NormalRun);
         assert_eq!(constants.name, "sec-sec".to_string());
         assert_eq!(constants.symbol, "SECSEC".to_string());
         assert_eq!(constants.decimals, 8);
@@ -1430,7 +1426,6 @@ mod tests {
         let config = ReadonlyConfig::from_storage(&deps.storage);
         let constants = config.constants().unwrap();
         assert_eq!(config.total_supply(), 5000);
-        assert_eq!(config.contract_status(), ContractStatusLevel::NormalRun);
         assert_eq!(constants.name, "sec-sec".to_string());
         assert_eq!(constants.symbol, "SECSEC".to_string());
         assert_eq!(constants.decimals, 8);
@@ -2484,6 +2479,30 @@ mod tests {
             error,
             "Wrong viewing key for this address or viewing key not set".to_string()
         );
+    }
+
+    #[test]
+    fn test_query_contract_status() {
+        let (init_result, deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+        let query_msg = QueryMsg::ContractStatus {};
+        let query_result = query(&deps, query_msg);
+        assert!(
+            query_result.is_ok(),
+            "Init failed: {}",
+            query_result.err().unwrap()
+        );
+        let query_answer: QueryAnswer = from_binary(&query_result.unwrap()).unwrap();
+        match query_answer {
+            QueryAnswer::ContractStatus { status } => {
+                assert_eq!(status, ContractStatusLevel::NormalRun);
+            }
+            _ => panic!("unexpected"),
+        }
     }
 
     #[test]
